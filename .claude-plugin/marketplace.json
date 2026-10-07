@@ -1,0 +1,29 @@
+{
+  "name": "altinok-dynamic-workflows",
+  "owner": {
+    "name": "Altinok Darici",
+    "url": "https://github.com/altinokdarici"
+  },
+  "metadata": {
+    "description": "Dynamic workflow orchestration plugins for Copilot CLI.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "custom-dynamic-workflows",
+      "source": "./",
+      "description": "Turns a task you describe in plain language into a graph of steps and runs every step to completion: parallel where it can, checked by code, asking you only when it is stuck.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Altinok Darici"
+      },
+      "keywords": [
+        "workflow",
+        "orchestration",
+        "priority-graph",
+        "copilot-cli"
+      ],
+      "category": "productivity"
+    }
+  ]
+}
