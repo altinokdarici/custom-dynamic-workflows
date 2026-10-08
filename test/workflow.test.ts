@@ -146,6 +146,25 @@ test("the goal check adds missing work and runs again", async (t) => {
   );
 });
 
+test("steps added while the goal runs make the goal run again after them", async (t) => {
+  const root = await tempRoot(t);
+  const wf = create(root, [task("a")]);
+  const fake = fakeAgent({
+    goal: [
+      () => {
+        wf.addTasks([task("late")]);
+        return undefined;
+      },
+      undefined,
+    ],
+  });
+
+  const result = await runPass(wf, { agent: fake.agent, check: fakeCheck().check });
+
+  assert.equal(result.status, "done");
+  assert.deepEqual(fake.order(), ["a#1", "goal#1", "late#1", "goal#2"]);
+});
+
 test("a report that would create a cycle is rejected without touching the graph", async (t) => {
   const root = await tempRoot(t);
   const wf = create(root, [task("a"), task("b", { dependsOn: ["a"] })]);

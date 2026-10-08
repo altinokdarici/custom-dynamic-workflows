@@ -180,7 +180,14 @@ export class Workflow {
 
   /** The check to run before `apply`, when the report would complete the step. */
   checkFor(id: string, outcome: Outcome): string | undefined {
-    return effectiveStatus(id, outcome) === "done" ? this.node(id).data.check : undefined;
+    if (effectiveStatus(id, outcome) !== "done" || this.#unfinishedBeforeGoal(id).length) return undefined;
+    return this.node(id).data.check;
+  }
+
+  /** Steps added while the goal step ran that are not finished; the goal cannot complete before them. */
+  #unfinishedBeforeGoal(id: string): string[] {
+    if (id !== GOAL) return [];
+    return [...this.graph.nodes()].filter((n) => n.id !== GOAL && n.state !== "completed").map((n) => n.id);
   }
 
   /** Applies a step's report. `check` is the result of `checkFor`'s command. */
@@ -188,6 +195,14 @@ export class Workflow {
     this.#requireInProgress(id);
     switch (effectiveStatus(id, outcome)) {
       case "done": {
+        const late = this.#unfinishedBeforeGoal(id);
+        if (late.length) {
+          return this.#tryTransact(id, (g) => {
+            g.requeue(id);
+            for (const dep of late) g.addDependency(id, dep, { label: "added while the goal ran" });
+            return "blocked";
+          });
+        }
         if (check && !check.ok) return this.retryOrAsk(id, `The check failed:\n${check.output}`);
         return this.#tryTransact(id, (g) => {
           const ids = addTasks(g, outcome.newTasks ?? []);
