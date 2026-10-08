@@ -9,6 +9,7 @@ type Session = Awaited<ReturnType<typeof joinSession>>;
 type Tool = NonNullable<JoinSessionConfig["tools"]>[number];
 
 let session: Session | undefined;
+let pausedHinted = false;
 
 // stdout is the JSON-RPC channel, so everything user-visible goes through session.log.
 function log(message: string, level: LogLevel = "info"): void {
@@ -183,12 +184,25 @@ session = await joinSession({
   hooks: {
     onUserPromptSubmitted: async () => {
       await host.load();
+      const parts: string[] = [];
       const questions = host.questions();
-      if (!questions.length) return;
-      const lines = questions.map((q) => `- workflow ${q.workflowId}, step ${q.nodeId} (${q.title}): ${q.question}`);
-      return {
-        additionalContext: `Dynamic workflow steps are waiting for the user's answer:\n${lines.join("\n")}\nIf the user's message answers one, pass it to dw_answer. Otherwise mention that these questions are open.`,
-      };
+      if (questions.length) {
+        const lines = questions.map((q) => `- workflow ${q.workflowId}, step ${q.nodeId} (${q.title}): ${q.question}`);
+        parts.push(
+          `Dynamic workflow steps are waiting for the user's answer:\n${lines.join("\n")}\nIf the user's message answers one, pass it to dw_answer. Otherwise mention that these questions are open.`,
+        );
+      }
+      if (!pausedHinted) {
+        pausedHinted = true;
+        const paused = host.paused();
+        if (paused.length) {
+          const lines = paused.map((wf) => `- ${wf.id}: ${wf.goal}`);
+          parts.push(
+            `These dynamic workflows of this project are paused with work left:\n${lines.join("\n")}\nMention them to the user and offer to resume with dw_run. Never resume without the user asking.`,
+          );
+        }
+      }
+      if (parts.length) return { additionalContext: parts.join("\n\n") };
     },
   },
 });

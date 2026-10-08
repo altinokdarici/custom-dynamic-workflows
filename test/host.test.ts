@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { runCheck } from "../src/check.ts";
 import { runPass } from "../src/driver.ts";
-import { Host } from "../src/host.ts";
+import { Host, isPaused } from "../src/host.ts";
 import { fakeAgent, fakeCheck, task, tempRoot } from "./helpers.ts";
 
 function testHost(root: string, fake: ReturnType<typeof fakeAgent>) {
@@ -83,4 +83,28 @@ test("runCheck reports the exit code and output of the command", async (t) => {
   const slow = runCheck("sleep 5", root, controller.signal);
   controller.abort();
   await assert.rejects(slow);
+});
+
+test("isPaused: only idle, unfinished workflows with startable steps", () => {
+  assert.equal(isPaused({ running: false, complete: false, runnableWork: true }), true);
+  assert.equal(isPaused({ running: true, complete: false, runnableWork: true }), false);
+  assert.equal(isPaused({ running: false, complete: true, runnableWork: false }), false);
+  assert.equal(isPaused({ running: false, complete: false, runnableWork: false }), false);
+});
+
+test("a later session lists paused workflows without resuming them", async (t) => {
+  const root = await tempRoot(t);
+  const first = new Host({ root, startPass: async () => undefined });
+  const started = await first.plan({ goal: "Half", concurrency: 1, tasks: [task("a"), task("b", { dependsOn: ["a"] })] });
+  const id = /Started workflow (\S+)\./.exec(started)![1]!;
+  await first.status({ workflowId: id, wait: true });
+
+  const passes: string[] = [];
+  const later = new Host({ root, startPass: async (wf) => (passes.push(wf.id), undefined) });
+  await later.load();
+  assert.deepEqual(
+    later.paused().map((wf) => wf.id),
+    [id],
+  );
+  assert.deepEqual(passes, []);
 });
