@@ -67,6 +67,13 @@ export class Host {
     return this.#active.has(id);
   }
 
+  /** Workflows of this project that are paused with work left. Call after load(). */
+  paused(): Workflow[] {
+    return [...this.#workflows.values()].filter((wf) =>
+      isPaused({ running: this.#active.has(wf.id), complete: wf.graph.isComplete, runnableWork: wf.hasRunnableWork() }),
+    );
+  }
+
   questions(): Question[] {
     return [...this.#workflows.values()].flatMap((wf) => wf.questions());
   }
@@ -202,6 +209,11 @@ export class Host {
   #log(message: string, level: LogLevel = "info"): void {
     this.#options.log?.(message, level);
   }
+}
+
+/** A workflow is paused when nothing runs it, it is not finished, and steps can still start. */
+export function isPaused(state: { running: boolean; complete: boolean; runnableWork: boolean }): boolean {
+  return !state.running && !state.complete && state.runnableWork;
 }
 
 /** The git top-level of `cwd`, or `cwd` outside a repository. */
