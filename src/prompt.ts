@@ -59,7 +59,7 @@ export function buildPrompt(wf: Workflow, id: string): string {
   ];
   if (data.check) {
     parts.push(
-      `When you report done, the driver runs this check in that directory, and the step only counts as done if it passes:\n${indent(data.check, "    ")}\nRun it yourself before reporting and fix what fails.`,
+      `When you report done, the driver runs this exact command from ${wf.cwdOf(id)}, and the step only counts as done if it passes:\n${indent(data.check, "    ")}\nBefore reporting, run it yourself exactly as written from that directory, and fix what fails.`,
     );
   }
 

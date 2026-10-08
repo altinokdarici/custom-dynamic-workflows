@@ -59,7 +59,7 @@ Each workflow is one JSON file: `.copilot/workflows/<id>.json` in the project, w
 
 Edges carry an optional `label` that says why one step waits for another.
 
-While a Copilot process drives a workflow it holds `<id>.lock` next to the JSON file; another process can't run or change that workflow until it ends (a lock from a dead process is taken over).
+While a Copilot process runs or changes a workflow, it holds `<id>.lock` next to the JSON file. Another process can't run or change that workflow until then; it reads the file again before showing it, and again after taking the lock, so it never acts on an old copy. A lock from a dead process is taken over.
 
 Every graph change goes through p-graph's store interface and is written atomically. If a session ends mid-run, `dw_run` picks the workflow up again: interrupted steps go back in the queue, marked as interrupted.
 
@@ -72,6 +72,8 @@ copilot --experimental --plugin-dir /path/to/custom-dynamic-workflows
 ```
 
 Then describe the work and ask for a dynamic workflow, or just describe work that obviously splits into stages.
+
+Step subagents ask for permissions just as the main agent does, one prompt per shell command. Allow the tools the steps need before a long run. Agents-app sessions can't run the plugin, because they don't load extensions.
 
 ## Develop
 
@@ -89,7 +91,8 @@ The built bundle is committed, because the CLI loads `extension.mjs` directly. R
 | `src/workflow.ts` | The graph rules: adding steps, applying reports, retry-or-ask, answers, recovery. |
 | `src/driver.ts` | One pass: the concurrency pool and running each step. |
 | `src/prompt.ts` | The step prompt and the report schema. |
-| `src/host.ts` | Workflow registry and tool handlers; restarts a pass when new work arrives. |
+| `src/host.ts` | Workflow registry and tool handlers: re-reads workflows other processes may have changed, takes the run lock before changing one, and restarts a pass when new work arrives. |
+| `src/lock.ts` | The per-workflow run lock. |
 | `src/extension.ts` | SDK glue: `joinSession`, the `dw-drive` workflow, the tools and the prompt hook. |
 | `src/store.ts`, `src/check.ts` | JSON-file store and the check runner. |
 
@@ -101,11 +104,18 @@ With Copilot CLI 1.0.93, non-interactive (`-p`):
 - **Retry and crash.** A check rigged to fail once sent its step back with the output, and attempt 2 passed without redoing the work. Killing the CLI mid-step and calling `dw_run` from a new session finished the workflow.
 - **Questions.** A step that reported `failed` became a question, and the main agent got a notification.
 
+In an SDK session that stayed alive between turns:
+
+- **Dogfood.** The plugin fixed five of its own limitations, one branch and worktree each, merged into local main. It took 3.6 minutes, 18 subagent runs and about 124 AI credits. The planner wrote checks that `cd` into a directory the step was already in, so every check failed until the main agent worked around it with a symlink. The completion notification woke the idle session, and the main agent then answered the five resulting questions itself instead of asking the user. Review afterwards found and fixed a gap in the new lock: a second process could still act on an old copy of a workflow.
+
 Details are in [DESIGN.md §11](DESIGN.md#11-tried-it).
 
 ## Limitations
 
-- The run lock covers one machine; a lock left by another host has to be deleted by hand.
+- The run lock covers one machine; a lock left by another host has to be deleted by hand (the refusal names the file).
+- A check can't be changed after planning. A wrong check fails the same way every time, and the step keeps asking you.
+- Only the prompt keeps the main agent from answering a step's question itself.
+- Agents-app (ACP) sessions don't load extensions, so they can't run the plugin.
 - Checks have no timeout.
 - A goal check that keeps finding different work has no round limit; only a repeated request asks you.
 - Workflows don't resume on their own in a new session; you're told about them and call `dw_run`.

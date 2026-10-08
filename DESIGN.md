@@ -36,7 +36,8 @@ skills/dynamic-workflow/SKILL.md
 src/workflow.ts   graph rules: adding steps, applying reports, retry-or-ask, answers, recovery
 src/driver.ts     one pass: the concurrency pool and running a step
 src/prompt.ts     the step prompt and the report schema
-src/host.ts       workflow registry and tool handlers
+src/host.ts       workflow registry and tool handlers: re-reads, takes the run lock, restarts passes
+src/lock.ts       the per-workflow run lock
 src/extension.ts  SDK glue: joinSession, dw-drive, tools, hook
 src/store.ts, src/check.ts, src/parse.ts, src/text.ts, src/types.ts
 ```
@@ -146,9 +147,15 @@ Every step ends with a report. The schema passed to `ctx.agent` enforces its sha
 - at most one active run per workflow;
 - the tool handlers.
 
-Workflow files load on first use. They never start on their own; `dw_run` resumes them. On the first prompt of a session, the extension tells the main agent which workflows of the project are paused with work left, so it can offer `dw_run`. It never resumes them itself, and it doesn't call a workflow paused when another live process is driving it.
+Workflow files are read again on every tool call and prompt, except those a pass of this process drives, which are current in memory. Another process may have changed the others. They never start on their own; `dw_run` resumes them. On the first prompt of a session, the extension tells the main agent which workflows of the project are paused with work left, so it can offer `dw_run`. It never resumes them itself, and it doesn't call a workflow paused when another live process is driving it.
 
-**Run lock.** A pass holds `.copilot/workflows/<id>.lock` (`{ pid, host }`, created atomically). While another live process holds it, `dw_run`, `dw_add_task`, `dw_answer` and the plan's auto-start refuse to touch the workflow with a message naming the owner, and `dw_status` shows it as running in that process. A lock whose owner is a dead process on this host is taken over; a lock from another host or an unreadable one counts as held. The lock is released when the pass ends.
+**Run lock.** A process runs or changes a workflow only while it holds `.copilot/workflows/<id>.lock` (`{ pid, host }`, created atomically), and it reads the file again right after taking the lock, so it never acts on an old copy. While another live process holds the lock:
+
+- `dw_run`, `dw_add_task`, `dw_answer` and the plan's auto-start refuse to touch the workflow, with a message naming the owner and the lock file;
+- `dw_status` shows the workflow as running in that process;
+- the prompt hint leaves out its questions, which are answered in the process that drives it.
+
+A lock whose owner is a dead process on this host is taken over. A lock from another host, or an unreadable one, counts as held. A change that starts no pass releases the lock at once. A pass releases it when it ends, in the same tick in which it stops counting as running, so a tool call never wakes a pass that has already ended. Tool calls run one at a time, so a re-read never replaces a workflow that another call is changing.
 
 **Pass.** A pass is one run of the SDK workflow `dw-drive`. The tool handler starts it without waiting, with `notifyOnComplete` set so the main agent is notified when the pass ends. A pass:
 
@@ -176,8 +183,8 @@ A hard error such as cancellation stops new dispatches. The running steps settle
 A step asks the user when it reports `needs_user`, reports `failed`, or fails the same way twice. The question is stored on the step, which stays in progress and is marked as waiting. Other steps keep running, and the pass ends `waiting` once only waiting steps are left.
 
 - The session shows a warning when a step asks.
-- On every user message, the `onUserPromptSubmitted` hook adds the open questions to the main agent's context.
-- The main agent passes the user's answer to `dw_answer`, never its own guess. The step then runs again with the question and answer in its prompt.
+- On every user message, the `onUserPromptSubmitted` hook adds the open questions to the main agent's context. Questions of a workflow that another live process drives are left out; they are answered in that process.
+- The main agent passes the user's answer to `dw_answer`, never its own guess. This is a prompt rule only: in the dogfood run (§11), the main agent answered for the user. The step then runs again with the question and answer in its prompt.
 
 ## 7. Parallelism
 
@@ -231,19 +238,22 @@ Code trusts the model for the following. The goal step re-checks the result.
 - The plan. The main agent writes the steps and their checks, and a weak check is a weak gate.
 - Not weakening tests or checks. The step prompt forbids it.
 - Not editing `.copilot/workflows/` or calling `dw_*` tools from a step. The prompt forbids it, but nothing technically prevents it. An edit made during a run is overwritten by the next write.
+- Passing only the user's words to `dw_answer`. The main agent broke this in the dogfood run (§11).
 
 ## 11. Tried it
 
-**Unit tests.** 16 tests use `node --test` with a fake agent and fake checks. They cover:
+**Unit tests.** 30 tests use `node --test` with a fake agent and fake checks. They cover:
 
 - the concurrency pool and dependency order;
 - a failing check retried with its output, and the same failure twice turning into a question;
 - `needs_user` with answers, `blocked`, discovered work, and the goal step adding work;
+- the goal step asking for the same work twice, and steps added while it runs;
 - a report that would create a cycle being rejected without changes;
 - crash recovery from the saved file;
-- bad plans, added-step ids, steps added mid-pass, and the check runner.
+- bad plans, added-step ids, steps added mid-pass, and the check runner with `CI=true`;
+- the run lock, a second process that must not act on an old copy, answers given at the same time, unreadable workflow files, and the paused-workflow hint.
 
-**Real runs.** These used Copilot CLI 1.0.93 with `--plugin-dir`, non-interactive (`-p`).
+**Real runs.** The first four used Copilot CLI 1.0.93 with `--plugin-dir`, non-interactive (`-p`).
 
 | Trial | What happened |
 | --- | --- |
@@ -252,18 +262,34 @@ Code trusts the model for the following. The goal step re-checks the result.
 | Migration (a sandbox repo with three skills and one agent in `.claude/`, one branch each, `npm run evals -- <name>` as the check, one item broken on purpose) | The main agent read the repo, created four worktrees and planned four steps at concurrency 4, which took 3.7 minutes. The run took 2 minutes and 5 subagents. Every check passed on the first attempt, including the broken item, which its agent fixed. |
 | Retry and crash | A check rigged to fail on its first run by the driver sent `alpha` back with the check's output. Attempt 2 verified the existing commit and passed without duplicating it. The CLI was then killed with SIGKILL while `beta` was running. In a new session, `dw_status` showed the workflow as paused, and `dw_run` requeued `beta` with the interruption note. `beta` checked for leftover work, finished, and the goal step passed. |
 
+**Dogfood run.** The plugin fixed five of its own limitations in this repository: goal convergence, steps added while the goal runs, the paused-workflow hint, the run lock, and `CI=true` for checks. Each fix got its own branch and worktree, and everything was merged into the local main branch. This ran in an SDK session (`@github/copilot-sdk` 1.0.17 with the bundled 1.0.93 runtime, `requestExtensions`). The session stayed alive between turns, and every permission request was approved and logged.
+
+- The main agent planned 8 steps at concurrency 5: a worktree setup step, the five fixes, and a merge-and-docs step. Planning took 27 seconds.
+- The five fixes ran in parallel, and each reported done after 15 to 30 seconds. Every check then failed twice with the same output. The planner had set each step's `cwd` to its worktree and also started each check with `cd ../cdw-worktrees/<name>`, so the path was doubled. The step agents had run their checks from the repo root, where they passed.
+- The pass ended `waiting` with five questions. The completion notification woke the idle session with no user prompt.
+- The main agent answered all five questions itself. It created a symlink that made the doubled path exist, then called `dw_answer` five times without asking the user. After that, the fixes, the merge and the goal check passed.
+- The run took 3.6 minutes and 18 subagent runs, 10 of which came from the broken checks. It cost about 124 AI credits. The subagents made 81 model calls with 2.8 M input tokens, 94% of them cache reads; each started with about 30k tokens of context. It made 68 permission requests, 63 of them from step subagents' shell commands.
+- Review afterwards found that the lock fix still let a second process act on its old copy of a workflow. That process re-ran finished steps and overwrote the other process's results, and a pass's lock release could swallow a wake-up. Both were fixed by hand, as described in §5.
+
 What the runs taught:
 
 - Agents run their check before reporting, as the prompt asks, so the driver rarely needs to retry. The retry path needed a rigged check to show up.
 - `failed` asks the user at once. In the questions trial, that turned a spurious refusal into a question. We kept it: an agent that says it can't continue shouldn't be retried blindly, and the user can answer "try again".
-- The main agent set up the worktrees itself before calling `dw_plan`, rather than planning a setup step.
+- In the migration trial, the main agent set up the worktrees itself; in the dogfood run, it planned a setup step.
 - An interrupted attempt originally gave the next attempt no hint. Recovery now records that the step was interrupted.
+- "Only the user answers questions" is a prompt rule. When the questions came from its own mistake, the main agent answered them itself. The skill and the `dw_answer` description now say so explicitly, but nothing enforces it.
+- A wrong check can't be fixed from inside a run. It fails the same way every time, so the step can only ask again. The prompt, the tool description and the skill now say that checks start in the step's `cwd`.
+- Step subagents ask for permissions as the main agent does. An interactive run needs the tools allowed up front, or the user gets one prompt per shell command.
 
 ## 12. Limitations and deferred work
 
 Limitations:
 
-- The run lock only covers one machine: a lock from another host is never taken over automatically, and a lock file left behind must then be deleted by hand.
+- The run lock only covers one machine: a lock from another host is never taken over automatically, and a lock file left behind must then be deleted by hand (the refusal names the file). Two processes taking over the same dead lock at the same moment could both win.
+- A check is fixed once planned. A wrong check fails the same way on every attempt, and the step can only ask the user again; the answer can't replace the check.
+- `dw_answer` takes whatever the main agent passes. Only the prompt keeps the main agent from answering for the user.
+- Step subagents' permission requests reach the session like the main agent's own, one per shell command.
+- Agents-app sessions (ACP) can't use the plugin: they don't load extensions, and the app pins CLI 1.0.88, whose SDK has no `session.workflow`. It works in the CLI, interactive or `-p`, and in SDK sessions that request extensions.
 - Checks have no timeout.
 - A goal step that keeps finding different work has no round limit; only a repeated request asks the user.
 - Workflows don't resume on their own in a new session; the first prompt only mentions them.
@@ -278,7 +304,7 @@ Changes from the v2 design:
 | Edges without labels | Labelled edges (p-graph edge data) | The label tells a step why it waited, for example `found by review`. |
 | Concurrency 1 by default, no worktrees | The AI chooses concurrency; worktrees through `cwd` | The owner's call: let the AI parallelize, with checks as the guard. |
 | Whole-snapshot writes and a `.bak` file | p-graph `GraphStore` change batches and atomic writes | p-graph gained a store interface. |
-| Lockfile, owner session and auto-start on session start | A per-workflow pid lock file; no owner session; an explicit `dw_run` (the first prompt mentions paused workflows) | Prevents two processes driving one workflow; keeps v1 simple. |
+| Lockfile, owner session and auto-start on session start | A per-workflow pid lock file, held while a process runs or changes the workflow; no owner session; an explicit `dw_run` (the first prompt mentions paused workflows) | Prevents two processes from driving one workflow or acting on an old copy; keeps v1 simple. |
 | Retry once on failure, then ask | Retry while failures differ; `failed` asks at once | No arbitrary counts. |
 | Driver-generated ids (`parent.n`) | Planner ids, slugged, with a suffix on collision | Readable ids in status and prompts. |
 | `dw_add_dependency` and `dw_start` | `blocks` on `dw_add_task`; `dw_plan` starts and `dw_run` resumes | Fewer tools. |
@@ -288,4 +314,5 @@ Also parked:
 - splitting p-graph into graph data and a replaceable runner;
 - a priority tool;
 - a session executor;
-- a hard round limit for the goal step (only repeated requests ask the user today).
+- a hard round limit for the goal step (only repeated requests ask the user today);
+- a way for the user to replace a wrong check, for example a `check` on `dw_answer`. The main agent can call `dw_answer` itself, so this would also let it weaken checks; it needs a decision first.

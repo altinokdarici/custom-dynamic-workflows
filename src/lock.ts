@@ -1,3 +1,4 @@
+import { readFileSync, rmSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 
@@ -32,13 +33,22 @@ async function readLock(path: string): Promise<{ owner: LockOwner | undefined } 
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+  return { owner: parseOwner(raw) };
+}
+
+/** The owner written in a lock file; undefined when unreadable, which counts as held by an unknown owner (it may be mid-write). */
+function parseOwner(raw: string): LockOwner | undefined {
   try {
     const value = JSON.parse(raw) as Partial<LockOwner>;
-    if (typeof value.pid === "number" && typeof value.host === "string") return { owner: { pid: value.pid, host: value.host } };
+    if (typeof value.pid === "number" && typeof value.host === "string") return { pid: value.pid, host: value.host };
   } catch {
-    // Treated as held by an unknown owner: it may be mid-write.
+    // Unreadable.
   }
-  return { owner: undefined };
+  return undefined;
+}
+
+function isOurs(owner: LockOwner | undefined): boolean {
+  return owner !== undefined && owner.pid === process.pid && owner.host === hostname();
 }
 
 /** The owner of a live lock held by a process other than this one, or undefined when free, ours or stale. */
@@ -46,7 +56,7 @@ export async function lockedByOther(path: string): Promise<{ owner: LockOwner | 
   const lock = await readLock(path);
   if (!lock) return undefined;
   const { owner } = lock;
-  if (owner && owner.pid === process.pid && owner.host === hostname()) return undefined;
+  if (isOurs(owner)) return undefined;
   if (owner && owner.host === hostname() && isGone(owner.pid)) return undefined;
   return lock;
 }
@@ -69,14 +79,20 @@ export async function acquireLock(path: string): Promise<{ owner: LockOwner | un
     if (other) return other;
     const current = await readLock(path);
     // Ours (re-entrant) or stale: ours is kept, stale is removed and retried.
-    if (current?.owner?.pid === process.pid) return undefined;
+    if (isOurs(current?.owner)) return undefined;
     await rm(path, { force: true });
   }
   return { owner: undefined };
 }
 
-/** Releases the lock if this process holds it. */
-export async function releaseLock(path: string): Promise<void> {
-  const lock = await readLock(path).catch(() => undefined);
-  if (lock?.owner && lock.owner.pid === process.pid && lock.owner.host === hostname()) await rm(path, { force: true });
+/**
+ * Releases the lock if this process holds it. Synchronous, so a finished pass
+ * can drop it in the same tick in which it stops counting as running.
+ */
+export function releaseLock(path: string): void {
+  try {
+    if (isOurs(parseOwner(readFileSync(path, "utf8")))) rmSync(path, { force: true });
+  } catch {
+    // No lock file, or one we can't read: there is nothing of ours to remove.
+  }
 }

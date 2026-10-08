@@ -115,3 +115,17 @@ test("a later session lists paused workflows without resuming them", async (t) =
   await writeFile(lockPath(workflowPath(root, id)), JSON.stringify({ pid: process.ppid, host: hostname() }));
   assert.deepEqual(await later.paused(), [], "a workflow another live process drives is not paused");
 });
+
+test("a workflow file that can't be loaded is skipped with one warning; the others still work", async (t) => {
+  const root = await tempRoot(t);
+  const warnings: string[] = [];
+  const host = new Host({ root, startPass: async () => undefined, log: (m, level) => level === "warning" && warnings.push(m) });
+  const id = /Started workflow (\S+)\./.exec(await host.plan({ goal: "Fine", concurrency: 1, tasks: [task("a")] }))![1]!;
+  await host.status({ workflowId: id, wait: true });
+  const broken = { version: 1, id: "broken", goal: "x", concurrency: 1, graph: { version: 1, nodes: [], dependencies: [{ id: "a", dependsOn: "b" }] } };
+  await writeFile(join(root, ".copilot", "workflows", "broken.json"), JSON.stringify(broken));
+
+  assert.match(await host.status({}), new RegExp(`- ${id}: paused`));
+  assert.match(await host.status({}), new RegExp(`- ${id}: paused`));
+  assert.equal(warnings.filter((w) => w.includes("broken.json")).length, 1, warnings.join("\n"));
+});

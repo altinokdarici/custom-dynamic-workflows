@@ -64,7 +64,7 @@ const TASK_SCHEMA = {
     check: {
       type: "string",
       description:
-        "Shell command the driver runs in cwd after the step reports done; exit code 0 means done. Prefer one whenever done can be verified by a command.",
+        "Shell command the driver runs after the step reports done; exit code 0 means done. It already starts in cwd, so write paths relative to cwd and don't cd into it again. Prefer one whenever done can be verified by a command.",
     },
     cwd: {
       type: "string",
@@ -157,7 +157,7 @@ const tools: Tool[] = [
   ),
   tool(
     "dw_answer",
-    "Answer a question a workflow step asked the user. Pass the user's answer, not your own guess. The step then runs again with it.",
+    "Answer a question a workflow step asked the user. Pass only what the user said, never your own answer, even when you can see the cause yourself: tell the user what you found and let them decide. The step then runs again with the answer.",
     {
       type: "object",
       required: ["workflowId", "nodeId", "answer"],
