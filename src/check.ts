@@ -8,7 +8,8 @@ const OUTPUT_TAIL = 12_000;
 const GROUP = process.platform !== "win32";
 
 /**
- * Runs a step's check command in its directory. Resolves with ok=false for a
+ * Runs a step's check command in its directory with CI=true, so test runners
+ * skip watch mode and prompts. Resolves with ok=false for a
  * failing command or a missing directory; rejects only when `signal` aborts.
  */
 export function runCheck(command: string, cwd: string, signal?: AbortSignal): Promise<CheckResult> {
@@ -18,7 +19,7 @@ export function runCheck(command: string, cwd: string, signal?: AbortSignal): Pr
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     let output = "";
-    const child = spawn(command, { cwd, shell: true, detached: GROUP, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, { cwd, shell: true, env: { ...process.env, CI: "true" }, detached: GROUP, stdio: ["ignore", "pipe", "pipe"] });
     const kill = () => {
       try {
         if (GROUP && child.pid) process.kill(-child.pid, "SIGTERM");
