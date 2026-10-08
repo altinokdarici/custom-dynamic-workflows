@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { runCheck } from "../src/check.ts";
 import { runPass } from "../src/driver.ts";
 import { Host, isPaused } from "../src/host.ts";
+import { lockPath } from "../src/lock.ts";
+import { workflowPath } from "../src/store.ts";
 import { fakeAgent, fakeCheck, task, tempRoot } from "./helpers.ts";
 
 function testHost(root: string, fake: ReturnType<typeof fakeAgent>) {
@@ -103,8 +107,11 @@ test("a later session lists paused workflows without resuming them", async (t) =
   const later = new Host({ root, startPass: async (wf) => (passes.push(wf.id), undefined) });
   await later.load();
   assert.deepEqual(
-    later.paused().map((wf) => wf.id),
+    (await later.paused()).map((wf) => wf.id),
     [id],
   );
   assert.deepEqual(passes, []);
+
+  await writeFile(lockPath(workflowPath(root, id)), JSON.stringify({ pid: process.ppid, host: hostname() }));
+  assert.deepEqual(await later.paused(), [], "a workflow another live process drives is not paused");
 });

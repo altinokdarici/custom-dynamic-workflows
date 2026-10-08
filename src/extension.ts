@@ -194,7 +194,7 @@ session = await joinSession({
       }
       if (!pausedHinted) {
         pausedHinted = true;
-        const paused = host.paused();
+        const paused = await host.paused();
         if (paused.length) {
           const lines = paused.map((wf) => `- ${wf.id}: ${wf.goal}`);
           parts.push(

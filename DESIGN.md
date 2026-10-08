@@ -78,7 +78,11 @@ A step's prompt shows the labels next to the results of the steps it waited for.
 
 Every workflow gets a node with the id `goal`. It depends on every other step. A step added later also becomes one of its prerequisites, as long as the goal step hasn't started.
 
+A step added while the goal step is running (for example by a tool call) can't become a prerequisite of a run already in progress. When the goal step finishes, the driver sees the unfinished steps, makes them prerequisites and runs the goal step again after them, so the goal is never declared done while work is left.
+
 Its agent checks the goal against the actual files, branches and command output instead of trusting the summaries. It also runs `goalCheck` if the planner gave one. If something is missing, it reports `blocked` with new steps; a `done` report that still lists new steps counts as `blocked`. Its priority is the lowest possible, so p-graph's priority inheritance never raises other steps through it.
+
+**Convergence.** The driver remembers the titles (normalised: case and whitespace) of the work the goal step last asked for. If the next goal report asks for the same work again, the new steps are not added; the goal step asks the user how to continue instead (§6). A report that asks for different work resets the comparison, so a goal step that finds new gaps each time still has no round limit.
 
 ### Ids and priority
 
@@ -107,7 +111,7 @@ There are no numeric caps. The skill and the report instructions keep plans at s
 
 The step's prompt shows the check and asks the agent to run it before reporting, so most failures get fixed within the attempt. The driver's run is the gate.
 
-Checks run in their own process group, so cancelling a run kills everything a check started. If the step's directory doesn't exist, the check fails with a message that says so.
+Checks run with `CI=true` in their environment, so test runners such as `node --test`, vitest and jest run once instead of starting watch mode. They run in their own process group, so cancelling a run kills everything a check started. If the step's directory doesn't exist, the check fails with a message that says so.
 
 ## 4. Reports
 
@@ -142,7 +146,9 @@ Every step ends with a report. The schema passed to `ctx.agent` enforces its sha
 - at most one active run per workflow;
 - the tool handlers.
 
-Workflow files load on first use. They never start on their own; `dw_run` resumes them.
+Workflow files load on first use. They never start on their own; `dw_run` resumes them. On the first prompt of a session, the extension tells the main agent which workflows of the project are paused with work left, so it can offer `dw_run`. It never resumes them itself, and it doesn't call a workflow paused when another live process is driving it.
+
+**Run lock.** A pass holds `.copilot/workflows/<id>.lock` (`{ pid, host }`, created atomically). While another live process holds it, `dw_run`, `dw_add_task`, `dw_answer` and the plan's auto-start refuse to touch the workflow with a message naming the owner, and `dw_status` shows it as running in that process. A lock whose owner is a dead process on this host is taken over; a lock from another host or an unreadable one counts as held. The lock is released when the pass ends.
 
 **Pass.** A pass is one run of the SDK workflow `dw-drive`. The tool handler starts it without waiting, with `notifyOnComplete` set so the main agent is notified when the pass ends. A pass:
 
@@ -257,11 +263,10 @@ What the runs taught:
 
 Limitations:
 
-- Only one Copilot process per project at a time; there is no lock.
+- The run lock only covers one machine: a lock from another host is never taken over automatically, and a lock file left behind must then be deleted by hand.
 - Checks have no timeout.
-- A goal step that keeps finding work has no round limit.
-- A step added while the goal step is running doesn't become one of its prerequisites.
-- Workflows don't resume on their own in a new session.
+- A goal step that keeps finding different work has no round limit; only a repeated request asks the user.
+- Workflows don't resume on their own in a new session; the first prompt only mentions them.
 - Steps run at least once: an interrupted step runs again, so instructions should be safe to repeat.
 
 Changes from the v2 design:
@@ -273,7 +278,7 @@ Changes from the v2 design:
 | Edges without labels | Labelled edges (p-graph edge data) | The label tells a step why it waited, for example `found by review`. |
 | Concurrency 1 by default, no worktrees | The AI chooses concurrency; worktrees through `cwd` | The owner's call: let the AI parallelize, with checks as the guard. |
 | Whole-snapshot writes and a `.bak` file | p-graph `GraphStore` change batches and atomic writes | p-graph gained a store interface. |
-| Lockfile, owner session and auto-start on session start | No lock, and an explicit `dw_run` | Keeps v1 simple. |
+| Lockfile, owner session and auto-start on session start | A per-workflow pid lock file; no owner session; an explicit `dw_run` (the first prompt mentions paused workflows) | Prevents two processes driving one workflow; keeps v1 simple. |
 | Retry once on failure, then ask | Retry while failures differ; `failed` asks at once | No arbitrary counts. |
 | Driver-generated ids (`parent.n`) | Planner ids, slugged, with a suffix on collision | Readable ids in status and prompts. |
 | `dw_add_dependency` and `dw_start` | `blocks` on `dw_add_task`; `dw_plan` starts and `dw_run` resumes | Fewer tools. |
@@ -283,4 +288,4 @@ Also parked:
 - splitting p-graph into graph data and a replaceable runner;
 - a priority tool;
 - a session executor;
-- a round limit for the goal step.
+- a hard round limit for the goal step (only repeated requests ask the user today).

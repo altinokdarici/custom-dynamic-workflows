@@ -69,10 +69,15 @@ export class Host {
     return this.#active.has(id);
   }
 
-  /** Workflows of this project that are paused with work left. Call after load(). */
-  paused(): Workflow[] {
+  /** Workflows of this project that are paused with work left; one another live process drives is not paused. Call after load(). */
+  async paused(): Promise<Workflow[]> {
+    await this.#refreshLocks();
     return [...this.#workflows.values()].filter((wf) =>
-      isPaused({ running: this.#active.has(wf.id), complete: wf.graph.isComplete, runnableWork: wf.hasRunnableWork() }),
+      isPaused({
+        running: this.#active.has(wf.id) || this.#foreign.has(wf.id),
+        complete: wf.graph.isComplete,
+        runnableWork: wf.hasRunnableWork(),
+      }),
     );
   }
 

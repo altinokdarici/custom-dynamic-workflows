@@ -34,7 +34,9 @@ The graph is a [p-graph](https://github.com/altinokdarici/p-graph): a dynamic pr
    | `needs_user` or `failed` | Asks you. |
    | Session ended mid-step | `dw_run` puts the step back in the queue and tells its next attempt to check what the interrupted one already did. |
 
-5. **Goal check.** A final `goal` step depends on every other step. It checks the goal against the repo (and runs `goalCheck` if you gave one), and adds steps for anything that's missing.
+5. **Goal check.** A final `goal` step depends on every other step. It checks the goal against the repo (and runs `goalCheck` if you gave one), and adds steps for anything that's missing. If steps are added while it runs, it runs again after them. If it asks for the same work twice in a row, it asks you instead of adding it again.
+
+Paused workflows with work left are mentioned to the main agent on your first message of a session; it offers `dw_run` and never resumes them on its own. Checks run with `CI=true`, so test runners don't start watch mode.
 
 Questions show up as session warnings, and in the main agent's context on your next message. Answer in chat; the agent passes your answer on with `dw_answer`.
 
@@ -46,7 +48,7 @@ Questions show up as session warnings, and in the main agent's context on your n
 | `dw_status` | Show steps, results, errors and questions. `wait: true` blocks until the run stops. |
 | `dw_answer` | Give a waiting step the user's answer; the step runs again. |
 | `dw_add_task` | Add a step. `blocks` makes steps that haven't started wait for it. |
-| `dw_run` | Resume a paused workflow, for example after a restart. Can change concurrency. |
+| `dw_run` | Resume a paused workflow, for example after a restart. Can change concurrency. A workflow another live Copilot process is driving is refused. |
 
 ## State
 
@@ -56,6 +58,8 @@ Each workflow is one JSON file: `.copilot/workflows/<id>.json` in the project, w
 - what only the driver writes: `attempts`, `lastError?`, `result?`, `question?` and `answer?`.
 
 Edges carry an optional `label` that says why one step waits for another.
+
+While a Copilot process drives a workflow it holds `<id>.lock` next to the JSON file; another process can't run or change that workflow until it ends (a lock from a dead process is taken over).
 
 Every graph change goes through p-graph's store interface and is written atomically. If a session ends mid-run, `dw_run` picks the workflow up again: interrupted steps go back in the queue, marked as interrupted.
 
@@ -101,11 +105,10 @@ Details are in [DESIGN.md §11](DESIGN.md#11-tried-it).
 
 ## Limitations
 
-- One Copilot process per project at a time; there is no lock.
+- The run lock covers one machine; a lock left by another host has to be deleted by hand.
 - Checks have no timeout.
-- A goal check that keeps finding work has no round limit.
-- A step added while the goal check is running doesn't become one of its prerequisites.
-- Workflows don't resume on their own in a new session; call `dw_run`.
+- A goal check that keeps finding different work has no round limit; only a repeated request asks you.
+- Workflows don't resume on their own in a new session; you're told about them and call `dw_run`.
 - An interrupted step runs again, so step instructions should be safe to repeat.
 
 See [DESIGN.md](DESIGN.md) for the reasoning.
