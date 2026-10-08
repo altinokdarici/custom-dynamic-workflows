@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { Wake } from "./driver.ts";
 import { InputError, optionalText, parseTask, parseTasks, record, text } from "./parse.ts";
-import { loadWorkflowFiles } from "./store.ts";
+import { acquireLock, describeOwner, lockedByOther, lockPath, releaseLock, type LockOwner } from "./lock.ts";
+import { loadWorkflowFiles, workflowPath } from "./store.ts";
 import type { PassResult, Question } from "./types.ts";
 import { Workflow } from "./workflow.ts";
 
@@ -25,6 +26,7 @@ export class Host {
   readonly #active = new Map<string, Promise<void>>();
   readonly #wakes = new Map<string, Wake>();
   #root: string | undefined;
+  readonly #foreign = new Map<string, LockOwner | undefined>();
   #loading: Promise<void> | undefined;
 
   constructor(options: HostOptions) {
@@ -103,11 +105,12 @@ export class Host {
     });
     this.#workflows.set(wf.id, wf);
     await wf.flush();
-    this.#ensureRunning(wf);
-    return [
-      `Started workflow ${wf.id}. It runs in the background; you get a notification when it finishes or needs the user.`,
-      this.#statusText(wf),
-    ].join("\n\n");
+    const state = await this.#ensureRunning(wf);
+    const lead =
+      state === "locked"
+        ? `Created workflow ${wf.id}, but it is NOT running: ${this.#lockedText(wf)}`
+        : `Started workflow ${wf.id}. It runs in the background; you get a notification when it finishes or needs the user.`;
+    return [lead, this.#statusText(wf)].join("\n\n");
   }
 
   async run(rawArgs: unknown): Promise<string> {
@@ -116,11 +119,12 @@ export class Host {
     const wf = this.get(text(args.workflowId, "workflowId"));
     if (args.concurrency !== undefined && args.concurrency !== null) wf.concurrency = args.concurrency as number;
     await wf.flush();
-    const state = this.#ensureRunning(wf);
+    const state = await this.#ensureRunning(wf);
     const lead = {
       started: "Resumed.",
       running: "Already running.",
       idle: "Nothing to run right now.",
+      locked: `NOT resumed: ${this.#lockedText(wf)}`,
     }[state];
     return `${lead}\n\n${this.#statusText(wf)}`;
   }
@@ -129,6 +133,7 @@ export class Host {
     await this.load();
     const args = record(rawArgs, "arguments");
     const wf = this.get(text(args.workflowId, "workflowId"));
+    await this.#assertNotLocked(wf);
     const blocks = args.blocks === undefined || args.blocks === null ? [] : args.blocks;
     if (!Array.isArray(blocks)) throw new InputError("blocks must be an array of step ids.");
     const [id] = wf.addTasks(
@@ -136,7 +141,7 @@ export class Host {
       blocks.map((b, i) => text(b, `blocks[${i}]`)),
     );
     await wf.flush();
-    this.#ensureRunning(wf);
+    await this.#ensureRunning(wf);
     return `Added step "${id}" to workflow ${wf.id}.`;
   }
 
@@ -145,9 +150,10 @@ export class Host {
     const args = record(rawArgs, "arguments");
     const wf = this.get(text(args.workflowId, "workflowId"));
     const nodeId = text(args.nodeId, "nodeId");
+    await this.#assertNotLocked(wf);
     wf.answer(nodeId, text(args.answer, "answer"));
     await wf.flush();
-    this.#ensureRunning(wf);
+    await this.#ensureRunning(wf);
     return `Answered. Step "${nodeId}" of workflow ${wf.id} runs again with the answer.`;
   }
 
@@ -156,27 +162,59 @@ export class Host {
     const args = rawArgs === undefined || rawArgs === null ? {} : record(rawArgs, "arguments");
     const id = optionalText(args.workflowId, "workflowId");
     if (!id) {
+      await this.#refreshLocks();
       if (!this.#workflows.size) return `No workflows in ${this.root}.`;
       return [...this.#workflows.values()].map((wf) => `- ${wf.id}: ${this.#state(wf)}. ${wf.goal}`).join("\n");
     }
     const wf = this.get(id);
+    await this.#refreshLocks([wf]);
     if (args.wait === true) await this.idle(wf.id, signal);
     return this.#statusText(wf);
   }
 
   /** Starts a pass if none is running and there is work, or wakes the running pass. */
-  #ensureRunning(wf: Workflow): "started" | "running" | "idle" {
+  async #ensureRunning(wf: Workflow): Promise<"started" | "running" | "idle" | "locked"> {
     if (this.#active.has(wf.id)) {
       this.wake(wf.id).notify();
       return "running";
     }
     if (!wf.hasRunnableWork()) return "idle";
-    const loop = this.#drive(wf);
+    const path = lockPath(workflowPath(this.root, wf.id));
+    const other = await acquireLock(path);
+    if (other) {
+      this.#foreign.set(wf.id, other.owner);
+      return "locked";
+    }
+    this.#foreign.delete(wf.id);
+    // Another call may have started a pass while the lock was being taken.
+    if (this.#active.has(wf.id)) {
+      this.wake(wf.id).notify();
+      return "running";
+    }
+    const loop = this.#drive(wf).finally(() => releaseLock(path).catch(() => {}));
     this.#active.set(wf.id, loop);
     void loop.finally(() => {
       if (this.#active.get(wf.id) === loop) this.#active.delete(wf.id);
     });
     return "started";
+  }
+
+  async #refreshLocks(workflows: Iterable<Workflow> = this.#workflows.values()): Promise<void> {
+    for (const wf of workflows) {
+      const other = this.#active.has(wf.id) ? undefined : await lockedByOther(lockPath(workflowPath(this.root, wf.id)));
+      if (other) this.#foreign.set(wf.id, other.owner);
+      else this.#foreign.delete(wf.id);
+    }
+  }
+
+  #lockedText(wf: Workflow): string {
+    return `workflow ${wf.id} is being driven by ${describeOwner(this.#foreign.get(wf.id))}. Only one Copilot process may run a workflow at a time; wait for it to finish, or stop that process (a lock left by a dead process is taken over automatically).`;
+  }
+
+  async #assertNotLocked(wf: Workflow): Promise<void> {
+    if (this.#active.has(wf.id)) return;
+    await this.#refreshLocks([wf]);
+    if (this.#foreign.has(wf.id)) throw new InputError(`Not changed: ${this.#lockedText(wf)}`);
   }
 
   /** Runs passes until one ends with nothing left to start. Never rejects. */
@@ -197,6 +235,7 @@ export class Host {
     const questions = wf.questions().length;
     const asking = questions ? `${questions} step(s) wait for the user's answer (dw_answer)` : "";
     if (this.#active.has(wf.id)) return asking ? `running; ${asking}` : "running";
+    if (this.#foreign.has(wf.id)) return `running in ${describeOwner(this.#foreign.get(wf.id))}`;
     if (wf.graph.isComplete) return "done";
     if (asking) return asking;
     return wf.hasRunnableWork() ? "paused (dw_run resumes it)" : "idle";
