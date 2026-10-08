@@ -205,8 +205,21 @@ export class Workflow {
         if (!outcome.newTasks?.length) {
           return this.retryOrAsk(id, "The step reported blocked without newTasks saying what has to happen first.");
         }
+        const requested = id === GOAL ? requestedTitles(outcome.newTasks) : undefined;
+        if (requested !== undefined) {
+          const data = this.node(id).data;
+          if (data.lastRequested?.join("\n") === requested.join("\n")) {
+            this.graph.setData(id, { ...data, lastRequested: undefined });
+            this.#ask(
+              id,
+              `The goal check asked for the same work twice in a row (${requested.join(", ")}), so it is not added again. The work did not satisfy the goal check:\n${outcome.summary || "(no summary)"}\n\nHow should it continue?`,
+            );
+            return "question";
+          }
+        }
         return this.#tryTransact(id, (g) => {
           g.requeue(id);
+          if (requested !== undefined) g.setData(id, { ...g.get(id)!.data, lastRequested: requested });
           for (const added of addTasks(g, outcome.newTasks!)) {
             g.addDependency(id, added, { label: "needed first" });
           }
@@ -314,6 +327,11 @@ export class Workflow {
 /** The goal check cannot pass while it still lists work to do. */
 function effectiveStatus(id: string, outcome: Outcome): Outcome["status"] {
   return id === GOAL && outcome.status === "done" && outcome.newTasks?.length ? "blocked" : outcome.status;
+}
+
+/** Sorted, normalized titles, so the same work asked for in another order or wording of whitespace compares equal. */
+function requestedTitles(tasks: readonly TaskInput[]): string[] {
+  return tasks.map((t) => t.title.replace(/\s+/g, " ").trim().toLowerCase()).sort();
 }
 
 /**
