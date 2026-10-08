@@ -14,6 +14,8 @@ export interface NodeSpec {
 export interface NodeData extends NodeSpec {
   attempts: number;
   lastError?: string;
+  /** Goal node only: normalized titles of the work its last report asked for. */
+  lastRequested?: string[];
   result?: string;
   question?: string;
   answer?: string;

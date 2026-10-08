@@ -146,6 +146,49 @@ test("the goal check adds missing work and runs again", async (t) => {
   );
 });
 
+test("the goal check asking for the same work twice asks the user instead of adding it again", async (t) => {
+  const root = await tempRoot(t);
+  const wf = create(root, [task("a")]);
+  const fake = fakeAgent({
+    goal: [
+      { status: "done", summary: "docs missing", newTasks: [task("docs", { title: "Write  Docs" })] },
+      { status: "done", summary: "still missing", newTasks: [task("docs-again", { title: "write docs " })] },
+      undefined,
+    ],
+  });
+
+  const first = await runPass(wf, { agent: fake.agent, check: fakeCheck().check });
+
+  assert.equal(first.status, "waiting");
+  assert.equal(first.status === "waiting" && first.questions[0]!.nodeId, GOAL);
+  assert.match(wf.node(GOAL).data.question!, /same work twice/);
+  assert.equal(wf.graph.has("docs-again"), false);
+  assert.deepEqual(fake.order(), ["a#1", "goal#1", "docs#1", "goal#2"]);
+
+  wf.answer(GOAL, "Skip the docs.");
+  const second = await runPass(wf, { agent: fake.agent, check: fakeCheck().check });
+
+  assert.equal(second.status, "done");
+});
+
+test("the goal check asking for different work each time keeps adding it", async (t) => {
+  const root = await tempRoot(t);
+  const wf = create(root, [task("a")]);
+  const fake = fakeAgent({
+    goal: [
+      { status: "done", summary: "", newTasks: [task("x", { title: "X" })] },
+      { status: "done", summary: "", newTasks: [task("y", { title: "Y" })] },
+      { status: "done", summary: "", newTasks: [task("x2", { title: "X" })] },
+      undefined,
+    ],
+  });
+
+  const result = await runPass(wf, { agent: fake.agent, check: fakeCheck().check });
+
+  assert.equal(result.status, "done");
+  assert.deepEqual(fake.order(), ["a#1", "goal#1", "x#1", "goal#2", "y#1", "goal#3", "x2#1", "goal#4"]);
+});
+
 test("a report that would create a cycle is rejected without touching the graph", async (t) => {
   const root = await tempRoot(t);
   const wf = create(root, [task("a"), task("b", { dependsOn: ["a"] })]);
