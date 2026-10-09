@@ -13,17 +13,16 @@ The `dw_*` tools run a task as a graph of steps. Each step runs as its own agent
 2. Split the work into stage-sized steps: one item, one package or one concern each. Don't use one step per command, and don't put everything in a single step. If the user names the stages, use them as given.
 3. For each step:
    - `instructions`: self-contained. The step's agent sees only these instructions, the goal, and the results of the steps it depends on. Say what to change, where, and what done looks like.
-   - `check`: a shell command that proves the step is done, such as `npm test -- foo` or `node scripts/evals.mjs foo`. Add one whenever a command can verify the step. It runs in the step's `cwd` (the repo root by default), so write paths relative to that directory and don't `cd` into it again.
+   - `check`: a shell command that proves the step is done, such as `npm test -- foo` or `node scripts/evals.mjs foo`. Add one whenever a command can verify the step. It runs from the repo root; for a step in a worktree, write `cd .worktrees/foo && npm test`.
    - `dependsOn`: only real ordering needs. Use `{ "id": "...", "label": "why" }` when the reason helps the later step.
-   - `cwd`: set it when the step works in a different directory, such as a git worktree that an earlier step creates.
-4. `concurrency`: decide how many steps can safely run at once. Steps that run together must not edit the same files or switch branches in the same checkout. For one branch per item, either create a git worktree per item (keep `.worktrees/` git-ignored) and set `cwd` to it, or use concurrency 1.
-5. `goal`: state it as the user would verify it. Add a `goalCheck` command if one exists.
+4. `concurrency`: decide how many steps can safely run at once. Steps that run together must not edit the same files or switch branches in the same checkout. For one branch per item, either create a git worktree per item (keep `.worktrees/` git-ignored) and say in the step's instructions to work there, or use concurrency 1.
+5. `goal`: state it as the user would verify it. Add a `goalCheck` command if one exists. It can't be changed later: it is the definition of done.
 
 ## While it runs
 
 - `dw_plan` returns immediately and the workflow runs in the background. Tell the user it started, then end your turn. Don't do the steps yourself. You'll get a notification when the run finishes or needs the user.
 - `dw_status` shows the steps, results, errors and questions. `wait: true` blocks until the workflow stops running. Use it only when you must stay in this turn, for example in a non-interactive run.
-- When a step asks a question, put it to the user and pass their answer to `dw_answer`. Never answer for them, even when you can see the cause yourself, such as a wrong check: tell the user what you found and let them decide.
+- When a step asks a question, put it to the user and pass their answer to `dw_answer`. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix. To replace a step's check, pass the new one as `check`. Every answer and check change is shown to the user and listed when the workflow finishes.
 - `dw_add_task` adds a step the user asks for. `dw_run` resumes a paused workflow, for example after a restart.
 
 Workflow state lives in `.copilot/workflows/<id>.json`, which is git-ignored. Don't edit it by hand.

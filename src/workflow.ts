@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
 import { PriorityGraph, type GraphNode } from "@altinokdarici/p-graph";
 import { InputError } from "./parse.ts";
 import { FileStore, workflowPath } from "./store.ts";
@@ -31,7 +30,6 @@ export interface CreateInput {
   concurrency: number;
   tasks: TaskInput[];
   goalCheck?: string;
-  goalCwd?: string;
 }
 
 /** What `apply` did with a report. */
@@ -74,7 +72,6 @@ export class Workflow {
     const wf = new Workflow(root, store, new PriorityGraph<NodeData, EdgeData>({ ...OPTIONS, store }));
     const goalData: NodeData = { title: "Check the goal", instructions: "", attempts: 0 };
     if (input.goalCheck) goalData.check = input.goalCheck;
-    if (input.goalCwd) goalData.cwd = input.goalCwd;
     wf.#transact((g) => {
       const ids = addTasks(g, input.tasks, { exactIds: true });
       g.addNode(GOAL, goalData, { priority: GOAL_PRIORITY, dependsOn: ids });
@@ -112,10 +109,6 @@ export class Workflow {
     const node = this.graph.get(id);
     if (!node) throw new InputError(`Workflow ${this.id} has no step "${id}".`);
     return node;
-  }
-
-  cwdOf(id: string): string {
-    return resolve(this.root, this.node(id).data.cwd ?? ".");
   }
 
   /** A step that asked the user something and has no answer yet. */
@@ -267,17 +260,40 @@ export class Workflow {
     return "retry";
   }
 
-  /** Records the user's answer and puts the step back in the queue. */
-  answer(id: string, text: string): void {
+  /**
+   * Records the answer, and a replacement check if given, in the step's
+   * history, and puts the step back in the queue. Returns the history entry.
+   * The goal check can't be replaced: it is the definition of done.
+   */
+  answer(id: string, text: string, check?: string): string {
     const node = this.node(id);
     if (!this.isWaiting(node)) throw new InputError(`Step "${id}" is not waiting for an answer.`);
     if (!text.trim()) throw new InputError("answer must be a non-empty string.");
-    this.graph.setData(id, { ...node.data, answer: text.trim() });
+    if (check !== undefined && id === GOAL) {
+      throw new InputError("The goal check is the definition of done and can't be changed.");
+    }
+    const data: NodeData = { ...node.data, answer: text.trim() };
+    let entry = `asked "${clip(node.data.question ?? "", 120)}", answered "${data.answer}"`;
+    if (check !== undefined && check !== node.data.check) {
+      entry += `; check changed from ${node.data.check ? `\`${node.data.check}\`` : "none"} to \`${check}\``;
+      data.check = check;
+      delete data.lastError;
+    }
+    data.history = [...(node.data.history ?? []), entry];
+    this.graph.setData(id, data);
     this.graph.requeue(id);
+    return entry;
+  }
+
+  /** Every answer and check change, per step. */
+  changes(): string[] {
+    return [...this.graph.nodes()].flatMap((node) => (node.data.history ?? []).map((entry) => `${node.id}: ${entry}`));
   }
 
   passResult(): PassResult {
-    if (this.graph.isComplete) return { status: "done", workflowId: this.id, steps: this.graph.size };
+    if (this.graph.isComplete) {
+      return { status: "done", workflowId: this.id, steps: this.graph.size, answersAndCheckChanges: this.changes() };
+    }
     const questions = this.questions();
     if (questions.length) return { status: "waiting", workflowId: this.id, questions };
     return { status: "stuck", workflowId: this.id, summary: this.statusText() };
@@ -290,6 +306,8 @@ export class Workflow {
       .join(", ");
     const lines = [`Workflow ${this.id}: ${this.goal}`, `Concurrency ${this.concurrency}. Steps: ${counts}.`];
     for (const node of g.nodes()) lines.push(this.#statusLine(node));
+    const changes = this.changes();
+    if (changes.length) lines.push("Answers and check changes:", ...changes.map((c) => `- ${c}`));
     return lines.join("\n");
   }
 
@@ -373,7 +391,6 @@ function addTasks(g: Graph, tasks: readonly TaskInput[], { exactIds = false } = 
   for (const [i, task] of tasks.entries()) {
     const data: NodeData = { title: task.title, instructions: task.instructions, attempts: 0 };
     if (task.check) data.check = task.check;
-    if (task.cwd) data.cwd = task.cwd;
     g.addNode(ids.get(keys[i]!)!, data, task.priority === undefined ? {} : { priority: task.priority });
   }
 

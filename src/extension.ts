@@ -64,11 +64,7 @@ const TASK_SCHEMA = {
     check: {
       type: "string",
       description:
-        "Shell command the driver runs after the step reports done; exit code 0 means done. It already starts in cwd, so write paths relative to cwd and don't cd into it again. Prefer one whenever done can be verified by a command.",
-    },
-    cwd: {
-      type: "string",
-      description: "Directory to work in, relative to the repo root (for example a git worktree). Defaults to the repo root.",
+        "Shell command the driver runs from the repo root after the step reports done; exit code 0 means done. For a step in a worktree, cd into it first: `cd .worktrees/foo && npm test`. Prefer one whenever done can be verified by a command.",
     },
     priority: { type: "number", description: "Among ready steps, higher runs first. Default 0." },
     dependsOn: {
@@ -125,8 +121,10 @@ const tools: Tool[] = [
             "How many steps may run at once. Choose it from how independent the steps are: steps running together must not edit the same files (use separate git worktrees for parallel branch work).",
         },
         tasks: { type: "array", items: TASK_SCHEMA, description: "The steps. Ids must be unique." },
-        goalCheck: { type: "string", description: "Optional shell command that must pass for the goal check to succeed." },
-        goalCwd: { type: "string", description: "Directory for goalCheck, relative to the repo root." },
+        goalCheck: {
+          type: "string",
+          description: "Optional shell command, run from the repo root, that must pass for the goal check to succeed. It can't be changed later.",
+        },
       },
     },
     (args) => host.plan(args),
@@ -157,11 +155,16 @@ const tools: Tool[] = [
   ),
   tool(
     "dw_answer",
-    "Answer a question a workflow step asked the user. Pass only what the user said, never your own answer, even when you can see the cause yourself: tell the user what you found and let them decide. The step then runs again with the answer.",
+    "Answer a question a workflow step asked the user, with the user's answer. If the step's check is wrong, pass a corrected `check` to replace it (not for the goal check). The step then runs again with the answer. Every answer and check change is shown to the user and kept in the workflow.",
     {
       type: "object",
       required: ["workflowId", "nodeId", "answer"],
-      properties: { workflowId: WORKFLOW_ID, nodeId: { type: "string" }, answer: { type: "string" } },
+      properties: {
+        workflowId: WORKFLOW_ID,
+        nodeId: { type: "string" },
+        answer: { type: "string" },
+        check: { type: "string", description: "Replaces the step's check, run from the repo root." },
+      },
     },
     (args) => host.answer(args),
     { skipPermission: true },
@@ -194,7 +197,7 @@ session = await joinSession({
       }
       if (!pausedHinted) {
         pausedHinted = true;
-        const paused = await host.paused();
+        const paused = host.paused();
         if (paused.length) {
           const lines = paused.map((wf) => `- ${wf.id}: ${wf.goal}`);
           parts.push(

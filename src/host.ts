@@ -1,8 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { Wake } from "./driver.ts";
 import { InputError, optionalText, parseTask, parseTasks, record, text } from "./parse.ts";
-import { acquireLock, describeOwner, lockedByOther, lockPath, releaseLock, type LockOwner } from "./lock.ts";
-import { loadWorkflowFiles, workflowPath } from "./store.ts";
+import { loadWorkflowFiles } from "./store.ts";
 import type { PassResult, Question } from "./types.ts";
 import { Workflow } from "./workflow.ts";
 
@@ -19,25 +18,21 @@ export interface HostOptions {
   log?(message: string, level?: LogLevel): void;
 }
 
-type RunState = "started" | "running" | "idle" | "locked";
+type RunState = "started" | "running" | "idle";
 
 /**
  * Holds the workflows of one project and implements the dw_* tools.
  *
- * Several Copilot processes may share a project. A process changes or runs a
- * workflow only while it holds the workflow's lock, and re-reads the file
- * after taking it. A workflow it doesn't drive is re-read before every use,
- * so it never shows or acts on an old copy. Tool calls run one at a time, so
+ * A workflow this process isn't running is read from disk before every use,
+ * since another session may have changed it. Tool calls run one at a time, so
  * a re-read never replaces a workflow that another call is changing.
  */
 export class Host {
   readonly #options: HostOptions;
   readonly #workflows = new Map<string, Workflow>();
-  /** Workflows a pass of this process drives; this process holds their locks. */
+  /** Workflows a pass of this process drives. */
   readonly #active = new Map<string, Promise<void>>();
   readonly #wakes = new Map<string, Wake>();
-  /** Workflows whose lock another live process holds, with the owner when known. */
-  readonly #foreign = new Map<string, LockOwner | undefined>();
   readonly #skipped = new Set<string>();
   #queue: Promise<unknown> = Promise.resolve();
   #root: string | undefined;
@@ -75,23 +70,16 @@ export class Host {
     return this.#active.has(id);
   }
 
-  /** Workflows of this project that are paused with work left; one another live process drives is not paused. Call after load(). */
-  paused(): Promise<Workflow[]> {
-    return this.#serial(async () => {
-      await this.#refreshLocks();
-      return [...this.#workflows.values()].filter((wf) =>
-        isPaused({
-          running: this.#active.has(wf.id) || this.#foreign.has(wf.id),
-          complete: wf.graph.isComplete,
-          runnableWork: wf.hasRunnableWork(),
-        }),
-      );
-    });
+  /** Workflows of this project that are paused with work left. Call after load(). */
+  paused(): Workflow[] {
+    return [...this.#workflows.values()].filter((wf) =>
+      isPaused({ running: this.#active.has(wf.id), complete: wf.graph.isComplete, runnableWork: wf.hasRunnableWork() }),
+    );
   }
 
-  /** Open questions, except those of workflows another live process drives: they are answered there. Call after load(). */
+  /** Open questions of every workflow. Call after load(). */
   questions(): Question[] {
-    return [...this.#workflows.values()].filter((wf) => !this.#foreign.has(wf.id)).flatMap((wf) => wf.questions());
+    return [...this.#workflows.values()].flatMap((wf) => wf.questions());
   }
 
   /** Resolves when no pass of the workflow is running. */
@@ -114,17 +102,13 @@ export class Host {
       concurrency: args.concurrency as number,
       tasks: parseTasks(args.tasks),
       goalCheck: optionalText(args.goalCheck, "goalCheck"),
-      goalCwd: optionalText(args.goalCwd, "goalCwd"),
     };
     return this.#serial(async () => {
       const created = Workflow.create(this.root, input);
       this.#workflows.set(created.id, created);
       await created.flush();
-      const state = await this.#change(created.id);
-      const lead =
-        state === "locked"
-          ? `Created workflow ${created.id}, but it is NOT running: ${this.#lockedText(created.id)}`
-          : `Started workflow ${created.id}. It runs in the background; you get a notification when it finishes or needs the user.`;
+      await this.#change(created.id);
+      const lead = `Started workflow ${created.id}. It runs in the background; you get a notification when it finishes or needs the user.`;
       return [lead, this.#statusText(this.get(created.id))].join("\n\n");
     });
   }
@@ -141,7 +125,6 @@ export class Host {
         started: "Resumed.",
         running: "Already running.",
         idle: "Nothing to run right now.",
-        locked: `NOT resumed: ${this.#lockedText(id)}`,
       }[state];
       return `${lead}\n\n${this.#statusText(this.get(id))}`;
     });
@@ -156,10 +139,9 @@ export class Host {
     const blocks = rawBlocks.map((b, i) => text(b, `blocks[${i}]`));
     return this.#serial(async () => {
       let added: string[] = [];
-      const state = await this.#change(id, (wf) => {
+      await this.#change(id, (wf) => {
         added = wf.addTasks([task], blocks);
       });
-      if (state === "locked") throw new InputError(`Not changed: ${this.#lockedText(id)}`);
       return `Added step "${added[0]}" to workflow ${id}.`;
     });
   }
@@ -169,9 +151,14 @@ export class Host {
     const id = text(args.workflowId, "workflowId");
     const nodeId = text(args.nodeId, "nodeId");
     const answer = text(args.answer, "answer");
+    const check = optionalText(args.check, "check");
     return this.#serial(async () => {
-      const state = await this.#change(id, (wf) => wf.answer(nodeId, answer));
-      if (state === "locked") throw new InputError(`Not changed: ${this.#lockedText(id)}`);
+      let note = "";
+      await this.#change(id, (wf) => {
+        note = wf.answer(nodeId, answer, check);
+      });
+      // Logged to the session, so the user sees every answer and check change whoever made it.
+      this.#log(`Workflow ${id}, step "${nodeId}": ${note}`, check ? "warning" : "info");
       return `Answered. Step "${nodeId}" of workflow ${id} runs again with the answer.`;
     });
   }
@@ -196,45 +183,22 @@ export class Host {
 
   /**
    * Applies `change` to a workflow, then starts a pass for the work it leaves
-   * or wakes the running one. When no pass of this process drives the
-   * workflow, it first takes the lock and re-reads the file, since another
-   * process may have changed it. Changes nothing and returns "locked" while
-   * another live process holds the lock.
+   * or wakes the running one. A workflow no pass of this process drives is
+   * read from disk first, since another session may have changed it.
    */
   async #change(id: string, change: (wf: Workflow) => void = () => {}): Promise<RunState> {
     await this.#load();
-    let wf = this.get(id);
+    const wf = this.get(id);
+    change(wf);
     if (this.#active.has(id)) {
-      change(wf);
       this.wake(id).notify();
       await wf.flush();
       return "running";
     }
-    const lock = lockPath(workflowPath(this.root, id));
-    const other = await acquireLock(lock);
-    if (other) {
-      this.#foreign.set(id, other.owner);
-      return "locked";
-    }
-    this.#foreign.delete(id);
-    try {
-      await this.#load();
-      wf = this.get(id);
-      change(wf);
-      await wf.flush();
-    } catch (error) {
-      releaseLock(lock);
-      throw error;
-    }
-    if (!wf.hasRunnableWork()) {
-      releaseLock(lock);
-      return "idle";
-    }
-    const loop = this.#drive(wf).finally(() => {
-      // Synchronous with the end of the pass, so no tool call finds a finished pass still running and only wakes it.
-      this.#active.delete(id);
-      releaseLock(lock);
-    });
+    await wf.flush();
+    if (!wf.hasRunnableWork()) return "idle";
+    // Deleted in the same tick the pass ends, so no tool call finds a finished pass still running and only wakes it.
+    const loop = this.#drive(wf).finally(() => this.#active.delete(id));
     this.#active.set(id, loop);
     return "started";
   }
@@ -263,19 +227,6 @@ export class Host {
     for (const id of this.#workflows.keys()) {
       if (!found.has(id) && !this.#active.has(id)) this.#workflows.delete(id);
     }
-    await this.#refreshLocks();
-  }
-
-  async #refreshLocks(): Promise<void> {
-    for (const wf of this.#workflows.values()) {
-      const other = this.#active.has(wf.id) ? undefined : await lockedByOther(lockPath(workflowPath(this.root, wf.id)));
-      if (other) this.#foreign.set(wf.id, other.owner);
-      else this.#foreign.delete(wf.id);
-    }
-  }
-
-  #lockedText(id: string): string {
-    return `workflow ${id} is being driven by ${describeOwner(this.#foreign.get(id))}. Only one Copilot process may run or change a workflow at a time; wait for that run to end, or stop that process. A lock left by a dead process on this machine is taken over automatically; one left on another machine, or one that can't be read, has to be deleted by hand: ${lockPath(workflowPath(this.root, id))}`;
   }
 
   /** Runs tool calls one at a time, so a re-read never replaces a workflow that another call is changing. */
@@ -303,7 +254,6 @@ export class Host {
     const questions = wf.questions().length;
     const asking = questions ? `${questions} step(s) wait for the user's answer (dw_answer)` : "";
     if (this.#active.has(wf.id)) return asking ? `running; ${asking}` : "running";
-    if (this.#foreign.has(wf.id)) return `running in ${describeOwner(this.#foreign.get(wf.id))}`;
     if (wf.graph.isComplete) return "done";
     if (asking) return asking;
     return wf.hasRunnableWork() ? "paused (dw_run resumes it)" : "idle";

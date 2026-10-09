@@ -18,11 +18,11 @@ The graph is a [p-graph](https://github.com/altinokdarici/p-graph): a dynamic pr
 
 1. **Plan.** The main agent reads the repo (guided by the `dynamic-workflow` skill) and calls `dw_plan` with:
    - the goal;
-   - stage-sized steps, each with instructions, an optional `check` command and an optional `cwd` (for example a git worktree);
+   - stage-sized steps, each with instructions and an optional `check` command;
    - their dependencies;
    - a `concurrency`, which the agent chooses based on how independent the steps are.
 2. **Run.** A background run takes ready steps in priority order and runs up to `concurrency` of them at once, each as its own subagent. Every step ends with a structured report: `done`, `blocked`, `needs_user` or `failed`.
-3. **Check.** When a step reports `done`, the driver runs the step's `check` in the step's directory. A step completes only when its check exits 0.
+3. **Check.** When a step reports `done`, the driver runs the step's `check` from the repo root. A step completes only when its check exits 0.
 4. **Recover.**
 
    | What happened | What the workflow does |
@@ -38,7 +38,7 @@ The graph is a [p-graph](https://github.com/altinokdarici/p-graph): a dynamic pr
 
 Paused workflows with work left are mentioned to the main agent on your first message of a session; it offers `dw_run` and never resumes them on its own. Checks run with `CI=true`, so test runners don't start watch mode.
 
-Questions show up as session warnings, and in the main agent's context on your next message. Answer in chat; the agent passes your answer on with `dw_answer`.
+Questions show up as session warnings, and in the main agent's context on your next message. Answer in chat; the agent passes your answer on with `dw_answer`, and can replace a wrong step check with it. Every answer and check change shows up as a session message and is listed when the workflow finishes. The goal check can't be changed.
 
 ## Tools
 
@@ -46,20 +46,20 @@ Questions show up as session warnings, and in the main agent's context on your n
 | --- | --- |
 | `dw_plan` | Create a workflow and start it in the background. |
 | `dw_status` | Show steps, results, errors and questions. `wait: true` blocks until the run stops. |
-| `dw_answer` | Give a waiting step the user's answer; the step runs again. |
+| `dw_answer` | Give a waiting step the user's answer, optionally with a corrected `check`; the step runs again. |
 | `dw_add_task` | Add a step. `blocks` makes steps that haven't started wait for it. |
-| `dw_run` | Resume a paused workflow, for example after a restart. Can change concurrency. A workflow another live Copilot process is driving is refused. |
+| `dw_run` | Resume a paused workflow, for example after a restart. Can change concurrency. |
 
 ## State
 
 Each workflow is one JSON file: `.copilot/workflows/<id>.json` in the project, which ignores itself through its own `.gitignore`. It holds the goal, the concurrency and the p-graph snapshot. Each node stores:
 
-- what the planner wrote: `title`, `instructions`, `check?` and `cwd?`;
-- what only the driver writes: `attempts`, `lastError?`, `result?`, `question?` and `answer?`.
+- what the planner wrote: `title`, `instructions` and `check?`;
+- what only the driver writes: `attempts`, `lastError?`, `result?`, `question?`, `answer?` and `history?` (every answer and check change).
 
 Edges carry an optional `label` that says why one step waits for another.
 
-While a Copilot process runs or changes a workflow, it holds `<id>.lock` next to the JSON file. Another process can't run or change that workflow until then; it reads the file again before showing it, and again after taking the lock, so it never acts on an old copy. A lock from a dead process is taken over.
+A session reads a workflow from disk before every use unless it's the one running it, so it never acts on an old copy. Don't run the same workflow from two live sessions at once; nothing stops that.
 
 Every graph change goes through p-graph's store interface and is written atomically. If a session ends mid-run, `dw_run` picks the workflow up again: interrupted steps go back in the queue, marked as interrupted.
 
@@ -91,8 +91,7 @@ The built bundle is committed, because the CLI loads `extension.mjs` directly. R
 | `src/workflow.ts` | The graph rules: adding steps, applying reports, retry-or-ask, answers, recovery. |
 | `src/driver.ts` | One pass: the concurrency pool and running each step. |
 | `src/prompt.ts` | The step prompt and the report schema. |
-| `src/host.ts` | Workflow registry and tool handlers: re-reads workflows other processes may have changed, takes the run lock before changing one, and restarts a pass when new work arrives. |
-| `src/lock.ts` | The per-workflow run lock. |
+| `src/host.ts` | Workflow registry and tool handlers: re-reads workflows other sessions may have changed, and restarts a pass when new work arrives. |
 | `src/extension.ts` | SDK glue: `joinSession`, the `dw-drive` workflow, the tools and the prompt hook. |
 | `src/store.ts`, `src/check.ts` | JSON-file store and the check runner. |
 
@@ -106,15 +105,14 @@ With Copilot CLI 1.0.93, non-interactive (`-p`):
 
 In an SDK session that stayed alive between turns:
 
-- **Dogfood.** The plugin fixed five of its own limitations, one branch and worktree each, merged into local main. It took 3.6 minutes, 18 subagent runs and about 124 AI credits. The planner wrote checks that `cd` into a directory the step was already in, so every check failed until the main agent worked around it with a symlink. The completion notification woke the idle session, and the main agent then answered the five resulting questions itself instead of asking the user. Review afterwards found and fixed a gap in the new lock: a second process could still act on an old copy of a workflow.
+- **Dogfood.** The plugin fixed five of its own limitations, one branch and worktree each, merged into local main. It took 3.6 minutes, 18 subagent runs and about 124 AI credits. The planner wrote checks that `cd` into a directory the step was already in, so every check failed until the main agent worked around it with a symlink. The completion notification woke the idle session, and the main agent then answered the five resulting questions itself instead of asking the user. Review afterwards found that a second session could act on an old copy of a workflow. The fixes that followed: one way to say where a check runs (the repo root), `dw_answer` can replace a wrong check in the open, and a session re-reads workflows it isn't running; the run lock the dogfood run added was removed again.
 
 Details are in [DESIGN.md §11](DESIGN.md#11-tried-it).
 
 ## Limitations
 
-- The run lock covers one machine; a lock left by another host has to be deleted by hand (the refusal names the file).
-- A check can't be changed after planning. A wrong check fails the same way every time, and the step keeps asking you.
-- Only the prompt keeps the main agent from answering a step's question itself.
+- Nothing stops two live sessions from running the same workflow at once.
+- The main agent can answer a step's question, or replace its check, without asking you. You see every answer and check change, but nothing prevents it. The goal check is the backstop: it can't be changed.
 - Agents-app (ACP) sessions don't load extensions, so they can't run the plugin.
 - Checks have no timeout.
 - A goal check that keeps finding different work has no round limit; only a repeated request asks you.

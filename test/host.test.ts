@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
-import { hostname } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { runCheck } from "../src/check.ts";
 import { runPass } from "../src/driver.ts";
 import { Host, isPaused } from "../src/host.ts";
-import { lockPath } from "../src/lock.ts";
 import { workflowPath } from "../src/store.ts";
 import { fakeAgent, fakeCheck, task, tempRoot } from "./helpers.ts";
 
@@ -107,13 +105,61 @@ test("a later session lists paused workflows without resuming them", async (t) =
   const later = new Host({ root, startPass: async (wf) => (passes.push(wf.id), undefined) });
   await later.load();
   assert.deepEqual(
-    (await later.paused()).map((wf) => wf.id),
+    later.paused().map((wf) => wf.id),
     [id],
   );
   assert.deepEqual(passes, []);
+});
 
-  await writeFile(lockPath(workflowPath(root, id)), JSON.stringify({ pid: process.ppid, host: hostname() }));
-  assert.deepEqual(await later.paused(), [], "a workflow another live process drives is not paused");
+test("a session reads a workflow another session changed and never runs it from an old copy", async (t) => {
+  const root = await tempRoot(t);
+  const fake = fakeAgent({ a: [{ status: "needs_user", summary: "", question: "Which one?" }, undefined] });
+  const { host: first } = testHost(root, fake);
+  const id = /Started workflow (\S+)\./.exec(await first.plan({ goal: "g", concurrency: 1, tasks: [task("a")] }))![1]!;
+  await first.status({ workflowId: id, wait: true });
+
+  const late = fakeAgent();
+  const { host: second } = testHost(root, late);
+  await second.load();
+  assert.deepEqual(second.questions().map((q) => q.nodeId), ["a"]);
+
+  await first.answer({ workflowId: id, nodeId: "a", answer: "this one" });
+  assert.match(await first.status({ workflowId: id, wait: true }), /State: done/);
+
+  assert.match(await second.status({ workflowId: id }), /State: done/);
+  await second.load();
+  assert.deepEqual(second.questions(), []);
+  await assert.rejects(second.answer({ workflowId: id, nodeId: "a", answer: "stale" }), /not waiting for an answer/);
+  assert.match(await second.run({ workflowId: id }), /Nothing to run/);
+  assert.deepEqual(late.calls, [], "finished steps never run again from an old copy");
+  const saved = JSON.parse(await readFile(workflowPath(root, id), "utf8")) as { graph: { nodes: { state: string }[] } };
+  assert.ok(saved.graph.nodes.every((n) => n.state === "completed"), "the finished workflow on disk is untouched");
+});
+
+test("answers given at the same time are all kept, and the user sees each one", async (t) => {
+  const root = await tempRoot(t);
+  const ask = (q: string) => [{ status: "needs_user", summary: "", question: q }, (p: string) => ({ status: "done", summary: p.includes("answer-") ? "got it" : "no answer" })];
+  const fake = fakeAgent({ a: ask("A?"), b: ask("B?") });
+  const logs: { message: string; level?: string }[] = [];
+  const host: Host = new Host({
+    root,
+    startPass: (wf) => runPass(wf, { agent: fake.agent, check: fakeCheck().check, wake: host.wake(wf.id) }),
+    log: (message, level) => logs.push({ message, level }),
+  });
+  const id = /Started workflow (\S+)\./.exec(await host.plan({ goal: "g", concurrency: 2, tasks: [task("a"), task("b", { check: "bad" })] }))![1]!;
+  await host.status({ workflowId: id, wait: true });
+  assert.equal(host.questions().length, 2);
+
+  await Promise.all([
+    host.answer({ workflowId: id, nodeId: "a", answer: "answer-a" }),
+    host.answer({ workflowId: id, nodeId: "b", answer: "answer-b", check: "good" }),
+  ]);
+  const status = await host.status({ workflowId: id, wait: true });
+  assert.match(status, /State: done/);
+  assert.equal((status.match(/got it/g) ?? []).length, 2, status);
+  const changed = logs.find((l) => l.message.includes("check changed from `bad` to `good`"));
+  assert.equal(changed?.level, "warning", JSON.stringify(logs));
+  assert.ok(logs.some((l) => l.message.includes('answered "answer-a"')));
 });
 
 test("a workflow file that can't be loaded is skipped with one warning; the others still work", async (t) => {

@@ -26,7 +26,7 @@ function runCheck(command, cwd, signal) {
   if (!existsSync(cwd)) {
     return Promise.resolve({ ok: false, output: `The check directory does not exist: ${cwd}` });
   }
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     let output = "";
     const child = spawn(command, { cwd, shell: true, env: { ...process.env, CI: "true" }, detached: GROUP, stdio: ["ignore", "pipe", "pipe"] });
@@ -45,14 +45,14 @@ function runCheck(command, cwd, signal) {
     child.stderr.on("data", collect);
     child.on("error", (error) => {
       signal?.removeEventListener("abort", kill);
-      resolve2({ ok: false, output: `Could not run the check: ${error.message}` });
+      resolve({ ok: false, output: `Could not run the check: ${error.message}` });
     });
     child.on("close", (code, killedBy) => {
       signal?.removeEventListener("abort", kill);
       if (signal?.aborted) return reject(signal.reason);
       const status = code === 0 ? "" : `
 (exit ${code ?? killedBy})`;
-      resolve2({ ok: code === 0, output: `$ ${command}
+      resolve({ ok: code === 0, output: `$ ${command}
 ${output.trimEnd()}${status}` });
     });
   });
@@ -76,8 +76,6 @@ function parseTask(raw, where = "task") {
   };
   const check = optionalText(o.check, `${where}.check`);
   if (check) task.check = check;
-  const cwd = optionalText(o.cwd, `${where}.cwd`);
-  if (cwd) task.cwd = cwd;
   if (o.priority !== void 0 && o.priority !== null) {
     if (typeof o.priority !== "number" || !Number.isFinite(o.priority)) {
       throw new InputError(`${where}.priority must be a number.`);
@@ -140,7 +138,6 @@ function optionalText(raw, where) {
 
 // src/workflow.ts
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
 
 // node_modules/@altinokdarici/p-graph/dist/errors.js
 var PriorityGraphError = class extends Error {
@@ -1099,7 +1096,6 @@ var Workflow = class _Workflow {
     const wf = new _Workflow(root, store, new PriorityGraph({ ...OPTIONS, store }));
     const goalData = { title: "Check the goal", instructions: "", attempts: 0 };
     if (input.goalCheck) goalData.check = input.goalCheck;
-    if (input.goalCwd) goalData.cwd = input.goalCwd;
     wf.#transact((g) => {
       const ids = addTasks(g, input.tasks, { exactIds: true });
       g.addNode(GOAL, goalData, { priority: GOAL_PRIORITY, dependsOn: ids });
@@ -1131,9 +1127,6 @@ var Workflow = class _Workflow {
     const node = this.graph.get(id);
     if (!node) throw new InputError(`Workflow ${this.id} has no step "${id}".`);
     return node;
-  }
-  cwdOf(id) {
-    return resolve(this.root, this.node(id).data.cwd ?? ".");
   }
   /** A step that asked the user something and has no answer yet. */
   isWaiting(node) {
@@ -1277,16 +1270,38 @@ How should it continue?`);
     this.graph.requeue(id);
     return "retry";
   }
-  /** Records the user's answer and puts the step back in the queue. */
-  answer(id, text2) {
+  /**
+   * Records the answer, and a replacement check if given, in the step's
+   * history, and puts the step back in the queue. Returns the history entry.
+   * The goal check can't be replaced: it is the definition of done.
+   */
+  answer(id, text2, check) {
     const node = this.node(id);
     if (!this.isWaiting(node)) throw new InputError(`Step "${id}" is not waiting for an answer.`);
     if (!text2.trim()) throw new InputError("answer must be a non-empty string.");
-    this.graph.setData(id, { ...node.data, answer: text2.trim() });
+    if (check !== void 0 && id === GOAL) {
+      throw new InputError("The goal check is the definition of done and can't be changed.");
+    }
+    const data = { ...node.data, answer: text2.trim() };
+    let entry = `asked "${clip(node.data.question ?? "", 120)}", answered "${data.answer}"`;
+    if (check !== void 0 && check !== node.data.check) {
+      entry += `; check changed from ${node.data.check ? `\`${node.data.check}\`` : "none"} to \`${check}\``;
+      data.check = check;
+      delete data.lastError;
+    }
+    data.history = [...node.data.history ?? [], entry];
+    this.graph.setData(id, data);
     this.graph.requeue(id);
+    return entry;
+  }
+  /** Every answer and check change, per step. */
+  changes() {
+    return [...this.graph.nodes()].flatMap((node) => (node.data.history ?? []).map((entry) => `${node.id}: ${entry}`));
   }
   passResult() {
-    if (this.graph.isComplete) return { status: "done", workflowId: this.id, steps: this.graph.size };
+    if (this.graph.isComplete) {
+      return { status: "done", workflowId: this.id, steps: this.graph.size, answersAndCheckChanges: this.changes() };
+    }
     const questions = this.questions();
     if (questions.length) return { status: "waiting", workflowId: this.id, questions };
     return { status: "stuck", workflowId: this.id, summary: this.statusText() };
@@ -1296,6 +1311,8 @@ How should it continue?`);
     const counts = ["completed", "in-progress", "ready", "pending"].map((state) => `${g.count(state)} ${state}`).join(", ");
     const lines = [`Workflow ${this.id}: ${this.goal}`, `Concurrency ${this.concurrency}. Steps: ${counts}.`];
     for (const node of g.nodes()) lines.push(this.#statusLine(node));
+    const changes = this.changes();
+    if (changes.length) lines.push("Answers and check changes:", ...changes.map((c) => `- ${c}`));
     return lines.join("\n");
   }
   flush() {
@@ -1364,7 +1381,6 @@ function addTasks(g, tasks, { exactIds = false } = {}) {
   for (const [i, task] of tasks.entries()) {
     const data = { title: task.title, instructions: task.instructions, attempts: 0 };
     if (task.check) data.check = task.check;
-    if (task.cwd) data.cwd = task.cwd;
     g.addNode(ids.get(keys[i]), data, task.priority === void 0 ? {} : { priority: task.priority });
   }
   for (const [i, task] of tasks.entries()) {
@@ -1402,7 +1418,7 @@ Finish with a report:
 - "blocked": something else must happen before this step can finish. Describe it as newTasks; this step runs again after them.
 - "needs_user": only the user can decide something. Ask in question; this step runs again with the answer.
 - "failed": the step cannot be done. Say why in summary.
-Each newTasks item has an id (short, kebab-case), a title, self-contained instructions, and optionally a check (a shell command that proves it is done), a cwd and dependsOn (ids of other new or existing steps).`;
+Each newTasks item has an id (short, kebab-case), a title, self-contained instructions, and optionally a check (a shell command run from the project root that proves it is done) and dependsOn (ids of other new or existing steps).`;
 var OUTCOME_SCHEMA = {
   type: "object",
   required: ["status", "summary"],
@@ -1420,7 +1436,6 @@ var OUTCOME_SCHEMA = {
           title: { type: "string" },
           instructions: { type: "string" },
           check: { type: "string" },
-          cwd: { type: "string" },
           dependsOn: { type: "array", items: { type: "string" } }
         }
       }
@@ -1437,13 +1452,13 @@ ${wf.goal}`,
     id === GOAL ? `## Your step: check the goal (attempt ${data.attempts})
 ${GOAL_INSTRUCTIONS}` : `## Your step: ${data.title} (id: ${id}, attempt ${data.attempts})
 ${data.instructions}`,
-    `Work in: ${wf.cwdOf(id)}`
+    `Project root: ${wf.root}`
   ];
   if (data.check) {
     parts.push(
-      `When you report done, the driver runs this exact command from ${wf.cwdOf(id)}, and the step only counts as done if it passes:
+      `When you report done, the driver runs this exact command from the project root, and the step only counts as done if it passes:
 ${indent(data.check, "    ")}
-Before reporting, run it yourself exactly as written from that directory, and fix what fails.`
+Before reporting, run it yourself exactly as written from the project root, and fix what fails.`
     );
   }
   const deps = wf.graph.dependencyEdges(id);
@@ -1471,7 +1486,7 @@ Answer: ${data.answer ?? "(none yet)"}`);
   if (others.length) {
     const lines = others.map((other) => {
       const state = other.state === "in-progress" ? "running now" : other.state;
-      return `- [${state}] ${other.id}: ${other.data.title}${other.data.cwd ? ` (in ${other.data.cwd})` : ""}`;
+      return `- [${state}] ${other.id}: ${other.data.title}`;
     });
     parts.push(
       `## Other steps in this workflow
@@ -1488,13 +1503,13 @@ var Wake = class {
   #promise;
   #resolve;
   wait() {
-    this.#promise ??= new Promise((resolve2) => this.#resolve = resolve2);
+    this.#promise ??= new Promise((resolve) => this.#resolve = resolve);
     return this.#promise;
   }
   notify() {
-    const resolve2 = this.#resolve;
+    const resolve = this.#resolve;
     this.#promise = this.#resolve = void 0;
-    resolve2?.();
+    resolve?.();
   }
 };
 async function runPass(wf, options) {
@@ -1531,7 +1546,7 @@ async function runStep(wf, id, options, signal, log2) {
   try {
     const outcome = parseOutcome(raw);
     const command = wf.checkFor(id, outcome);
-    const check = command === void 0 ? void 0 : await options.check(command, wf.cwdOf(id), signal);
+    const check = command === void 0 ? void 0 : await options.check(command, wf.root, signal);
     if (check) log2(`${check.ok ? "\u2713" : "\u2717"} check for ${id}`);
     applied = wf.apply(id, outcome, check);
   } catch (error) {
@@ -1547,88 +1562,12 @@ async function runStep(wf, id, options, signal, log2) {
 
 // src/host.ts
 import { execFileSync } from "node:child_process";
-
-// src/lock.ts
-import { readFileSync, rmSync } from "node:fs";
-import { readFile as readFile2, rm, writeFile as writeFile2 } from "node:fs/promises";
-import { hostname } from "node:os";
-function lockPath(workflowFile) {
-  return workflowFile.replace(/\.json$/, "") + ".lock";
-}
-function describeOwner(owner) {
-  return owner ? `process ${owner.pid} on ${owner.host}` : "another process";
-}
-function isGone(pid) {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return error.code === "ESRCH";
-  }
-}
-async function readLock(path) {
-  let raw;
-  try {
-    raw = await readFile2(path, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") return void 0;
-    throw error;
-  }
-  return { owner: parseOwner(raw) };
-}
-function parseOwner(raw) {
-  try {
-    const value = JSON.parse(raw);
-    if (typeof value.pid === "number" && typeof value.host === "string") return { pid: value.pid, host: value.host };
-  } catch {
-  }
-  return void 0;
-}
-function isOurs(owner) {
-  return owner !== void 0 && owner.pid === process.pid && owner.host === hostname();
-}
-async function lockedByOther(path) {
-  const lock = await readLock(path);
-  if (!lock) return void 0;
-  const { owner } = lock;
-  if (isOurs(owner)) return void 0;
-  if (owner && owner.host === hostname() && isGone(owner.pid)) return void 0;
-  return lock;
-}
-async function acquireLock(path) {
-  const body = `${JSON.stringify({ pid: process.pid, host: hostname() })}
-`;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      await writeFile2(path, body, { flag: "wx" });
-      return void 0;
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-    }
-    const other = await lockedByOther(path);
-    if (other) return other;
-    const current = await readLock(path);
-    if (isOurs(current?.owner)) return void 0;
-    await rm(path, { force: true });
-  }
-  return { owner: void 0 };
-}
-function releaseLock(path) {
-  try {
-    if (isOurs(parseOwner(readFileSync(path, "utf8")))) rmSync(path, { force: true });
-  } catch {
-  }
-}
-
-// src/host.ts
 var Host = class {
   #options;
   #workflows = /* @__PURE__ */ new Map();
-  /** Workflows a pass of this process drives; this process holds their locks. */
+  /** Workflows a pass of this process drives. */
   #active = /* @__PURE__ */ new Map();
   #wakes = /* @__PURE__ */ new Map();
-  /** Workflows whose lock another live process holds, with the owner when known. */
-  #foreign = /* @__PURE__ */ new Map();
   #skipped = /* @__PURE__ */ new Set();
   #queue = Promise.resolve();
   #root;
@@ -1659,22 +1598,15 @@ var Host = class {
   isRunning(id) {
     return this.#active.has(id);
   }
-  /** Workflows of this project that are paused with work left; one another live process drives is not paused. Call after load(). */
+  /** Workflows of this project that are paused with work left. Call after load(). */
   paused() {
-    return this.#serial(async () => {
-      await this.#refreshLocks();
-      return [...this.#workflows.values()].filter(
-        (wf) => isPaused({
-          running: this.#active.has(wf.id) || this.#foreign.has(wf.id),
-          complete: wf.graph.isComplete,
-          runnableWork: wf.hasRunnableWork()
-        })
-      );
-    });
+    return [...this.#workflows.values()].filter(
+      (wf) => isPaused({ running: this.#active.has(wf.id), complete: wf.graph.isComplete, runnableWork: wf.hasRunnableWork() })
+    );
   }
-  /** Open questions, except those of workflows another live process drives: they are answered there. Call after load(). */
+  /** Open questions of every workflow. Call after load(). */
   questions() {
-    return [...this.#workflows.values()].filter((wf) => !this.#foreign.has(wf.id)).flatMap((wf) => wf.questions());
+    return [...this.#workflows.values()].flatMap((wf) => wf.questions());
   }
   /** Resolves when no pass of the workflow is running. */
   async idle(id, signal) {
@@ -1682,10 +1614,10 @@ var Host = class {
     if (!active) return;
     if (!signal) return active;
     signal.throwIfAborted();
-    await new Promise((resolve2, reject) => {
+    await new Promise((resolve, reject) => {
       const onAbort = () => reject(signal.reason);
       signal.addEventListener("abort", onAbort, { once: true });
-      active.then(resolve2, reject).finally(() => signal.removeEventListener("abort", onAbort));
+      active.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
     });
   }
   async plan(rawArgs) {
@@ -1694,15 +1626,14 @@ var Host = class {
       goal: text(args.goal, "goal"),
       concurrency: args.concurrency,
       tasks: parseTasks(args.tasks),
-      goalCheck: optionalText(args.goalCheck, "goalCheck"),
-      goalCwd: optionalText(args.goalCwd, "goalCwd")
+      goalCheck: optionalText(args.goalCheck, "goalCheck")
     };
     return this.#serial(async () => {
       const created = Workflow.create(this.root, input);
       this.#workflows.set(created.id, created);
       await created.flush();
-      const state = await this.#change(created.id);
-      const lead = state === "locked" ? `Created workflow ${created.id}, but it is NOT running: ${this.#lockedText(created.id)}` : `Started workflow ${created.id}. It runs in the background; you get a notification when it finishes or needs the user.`;
+      await this.#change(created.id);
+      const lead = `Started workflow ${created.id}. It runs in the background; you get a notification when it finishes or needs the user.`;
       return [lead, this.#statusText(this.get(created.id))].join("\n\n");
     });
   }
@@ -1717,8 +1648,7 @@ var Host = class {
       const lead = {
         started: "Resumed.",
         running: "Already running.",
-        idle: "Nothing to run right now.",
-        locked: `NOT resumed: ${this.#lockedText(id)}`
+        idle: "Nothing to run right now."
       }[state];
       return `${lead}
 
@@ -1734,10 +1664,9 @@ ${this.#statusText(this.get(id))}`;
     const blocks = rawBlocks.map((b, i) => text(b, `blocks[${i}]`));
     return this.#serial(async () => {
       let added = [];
-      const state = await this.#change(id, (wf) => {
+      await this.#change(id, (wf) => {
         added = wf.addTasks([task], blocks);
       });
-      if (state === "locked") throw new InputError(`Not changed: ${this.#lockedText(id)}`);
       return `Added step "${added[0]}" to workflow ${id}.`;
     });
   }
@@ -1746,9 +1675,13 @@ ${this.#statusText(this.get(id))}`;
     const id = text(args.workflowId, "workflowId");
     const nodeId = text(args.nodeId, "nodeId");
     const answer = text(args.answer, "answer");
+    const check = optionalText(args.check, "check");
     return this.#serial(async () => {
-      const state = await this.#change(id, (wf) => wf.answer(nodeId, answer));
-      if (state === "locked") throw new InputError(`Not changed: ${this.#lockedText(id)}`);
+      let note = "";
+      await this.#change(id, (wf) => {
+        note = wf.answer(nodeId, answer, check);
+      });
+      this.#log(`Workflow ${id}, step "${nodeId}": ${note}`, check ? "warning" : "info");
       return `Answered. Step "${nodeId}" of workflow ${id} runs again with the answer.`;
     });
   }
@@ -1771,45 +1704,22 @@ ${this.#statusText(this.get(id))}`;
   }
   /**
    * Applies `change` to a workflow, then starts a pass for the work it leaves
-   * or wakes the running one. When no pass of this process drives the
-   * workflow, it first takes the lock and re-reads the file, since another
-   * process may have changed it. Changes nothing and returns "locked" while
-   * another live process holds the lock.
+   * or wakes the running one. A workflow no pass of this process drives is
+   * read from disk first, since another session may have changed it.
    */
   async #change(id, change = () => {
   }) {
     await this.#load();
-    let wf = this.get(id);
+    const wf = this.get(id);
+    change(wf);
     if (this.#active.has(id)) {
-      change(wf);
       this.wake(id).notify();
       await wf.flush();
       return "running";
     }
-    const lock = lockPath(workflowPath(this.root, id));
-    const other = await acquireLock(lock);
-    if (other) {
-      this.#foreign.set(id, other.owner);
-      return "locked";
-    }
-    this.#foreign.delete(id);
-    try {
-      await this.#load();
-      wf = this.get(id);
-      change(wf);
-      await wf.flush();
-    } catch (error) {
-      releaseLock(lock);
-      throw error;
-    }
-    if (!wf.hasRunnableWork()) {
-      releaseLock(lock);
-      return "idle";
-    }
-    const loop = this.#drive(wf).finally(() => {
-      this.#active.delete(id);
-      releaseLock(lock);
-    });
+    await wf.flush();
+    if (!wf.hasRunnableWork()) return "idle";
+    const loop = this.#drive(wf).finally(() => this.#active.delete(id));
     this.#active.set(id, loop);
     return "started";
   }
@@ -1837,17 +1747,6 @@ ${this.#statusText(this.get(id))}`;
     for (const id of this.#workflows.keys()) {
       if (!found.has(id) && !this.#active.has(id)) this.#workflows.delete(id);
     }
-    await this.#refreshLocks();
-  }
-  async #refreshLocks() {
-    for (const wf of this.#workflows.values()) {
-      const other = this.#active.has(wf.id) ? void 0 : await lockedByOther(lockPath(workflowPath(this.root, wf.id)));
-      if (other) this.#foreign.set(wf.id, other.owner);
-      else this.#foreign.delete(wf.id);
-    }
-  }
-  #lockedText(id) {
-    return `workflow ${id} is being driven by ${describeOwner(this.#foreign.get(id))}. Only one Copilot process may run or change a workflow at a time; wait for that run to end, or stop that process. A lock left by a dead process on this machine is taken over automatically; one left on another machine, or one that can't be read, has to be deleted by hand: ${lockPath(workflowPath(this.root, id))}`;
   }
   /** Runs tool calls one at a time, so a re-read never replaces a workflow that another call is changing. */
   #serial(task) {
@@ -1872,7 +1771,6 @@ ${this.#statusText(this.get(id))}`;
     const questions = wf.questions().length;
     const asking = questions ? `${questions} step(s) wait for the user's answer (dw_answer)` : "";
     if (this.#active.has(wf.id)) return asking ? `running; ${asking}` : "running";
-    if (this.#foreign.has(wf.id)) return `running in ${describeOwner(this.#foreign.get(wf.id))}`;
     if (wf.graph.isComplete) return "done";
     if (asking) return asking;
     return wf.hasRunnableWork() ? "paused (dw_run resumes it)" : "idle";
@@ -1951,11 +1849,7 @@ var TASK_SCHEMA = {
     },
     check: {
       type: "string",
-      description: "Shell command the driver runs after the step reports done; exit code 0 means done. It already starts in cwd, so write paths relative to cwd and don't cd into it again. Prefer one whenever done can be verified by a command."
-    },
-    cwd: {
-      type: "string",
-      description: "Directory to work in, relative to the repo root (for example a git worktree). Defaults to the repo root."
+      description: "Shell command the driver runs from the repo root after the step reports done; exit code 0 means done. For a step in a worktree, cd into it first: `cd .worktrees/foo && npm test`. Prefer one whenever done can be verified by a command."
     },
     priority: { type: "number", description: "Among ready steps, higher runs first. Default 0." },
     dependsOn: {
@@ -2002,8 +1896,10 @@ var tools = [
           description: "How many steps may run at once. Choose it from how independent the steps are: steps running together must not edit the same files (use separate git worktrees for parallel branch work)."
         },
         tasks: { type: "array", items: TASK_SCHEMA, description: "The steps. Ids must be unique." },
-        goalCheck: { type: "string", description: "Optional shell command that must pass for the goal check to succeed." },
-        goalCwd: { type: "string", description: "Directory for goalCheck, relative to the repo root." }
+        goalCheck: {
+          type: "string",
+          description: "Optional shell command, run from the repo root, that must pass for the goal check to succeed. It can't be changed later."
+        }
       }
     },
     (args) => host.plan(args)
@@ -2034,11 +1930,16 @@ var tools = [
   ),
   tool(
     "dw_answer",
-    "Answer a question a workflow step asked the user. Pass only what the user said, never your own answer, even when you can see the cause yourself: tell the user what you found and let them decide. The step then runs again with the answer.",
+    "Answer a question a workflow step asked the user, with the user's answer. If the step's check is wrong, pass a corrected `check` to replace it (not for the goal check). The step then runs again with the answer. Every answer and check change is shown to the user and kept in the workflow.",
     {
       type: "object",
       required: ["workflowId", "nodeId", "answer"],
-      properties: { workflowId: WORKFLOW_ID, nodeId: { type: "string" }, answer: { type: "string" } }
+      properties: {
+        workflowId: WORKFLOW_ID,
+        nodeId: { type: "string" },
+        answer: { type: "string" },
+        check: { type: "string", description: "Replaces the step's check, run from the repo root." }
+      }
     },
     (args) => host.answer(args),
     { skipPermission: true }
@@ -2072,7 +1973,7 @@ If the user's message answers one, pass it to dw_answer. Otherwise mention that 
       }
       if (!pausedHinted) {
         pausedHinted = true;
-        const paused = await host.paused();
+        const paused = host.paused();
         if (paused.length) {
           const lines = paused.map((wf) => `- ${wf.id}: ${wf.goal}`);
           parts.push(

@@ -6,8 +6,6 @@ export interface NodeSpec {
   instructions: string;
   /** Shell command run by the driver (not the agent) after the step reports done. */
   check?: string;
-  /** Directory the step works in, relative to the project root (e.g. a git worktree). */
-  cwd?: string;
 }
 
 /** What the graph stores per node: the spec plus fields only the driver writes. */
@@ -19,6 +17,8 @@ export interface NodeData extends NodeSpec {
   result?: string;
   question?: string;
   answer?: string;
+  /** Every answer given to this step, and check changes made with them. */
+  history?: string[];
 }
 
 export interface EdgeData {
@@ -66,6 +66,6 @@ export type Question = {
 };
 
 export type PassResult =
-  | { status: "done"; workflowId: string; steps: number }
+  | { status: "done"; workflowId: string; steps: number; answersAndCheckChanges: string[] }
   | { status: "waiting"; workflowId: string; questions: Question[] }
   | { status: "stuck"; workflowId: string; summary: string };

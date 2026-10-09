@@ -5,7 +5,7 @@ import type { Workflow } from "./workflow.ts";
 
 /** Runs one step agent; resolves with its raw report (null when the agent failed). */
 export type AgentFn = (prompt: string, label: string) => Promise<unknown>;
-export type CheckFn = (command: string, cwd: string, signal: AbortSignal) => Promise<CheckResult>;
+export type CheckFn = (command: string, root: string, signal: AbortSignal) => Promise<CheckResult>;
 
 export interface PassOptions {
   agent: AgentFn;
@@ -85,7 +85,7 @@ async function runStep(
   try {
     const outcome = parseOutcome(raw);
     const command = wf.checkFor(id, outcome);
-    const check = command === undefined ? undefined : await options.check(command, wf.cwdOf(id), signal);
+    const check = command === undefined ? undefined : await options.check(command, wf.root, signal);
     if (check) log(`${check.ok ? "✓" : "✗"} check for ${id}`);
     applied = wf.apply(id, outcome, check);
   } catch (error) {

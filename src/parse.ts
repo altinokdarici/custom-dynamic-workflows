@@ -20,8 +20,6 @@ export function parseTask(raw: unknown, where = "task"): TaskInput {
   };
   const check = optionalText(o.check, `${where}.check`);
   if (check) task.check = check;
-  const cwd = optionalText(o.cwd, `${where}.cwd`);
-  if (cwd) task.cwd = cwd;
   if (o.priority !== undefined && o.priority !== null) {
     if (typeof o.priority !== "number" || !Number.isFinite(o.priority)) {
       throw new InputError(`${where}.priority must be a number.`);

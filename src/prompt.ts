@@ -17,7 +17,7 @@ Finish with a report:
 - "blocked": something else must happen before this step can finish. Describe it as newTasks; this step runs again after them.
 - "needs_user": only the user can decide something. Ask in question; this step runs again with the answer.
 - "failed": the step cannot be done. Say why in summary.
-Each newTasks item has an id (short, kebab-case), a title, self-contained instructions, and optionally a check (a shell command that proves it is done), a cwd and dependsOn (ids of other new or existing steps).`;
+Each newTasks item has an id (short, kebab-case), a title, self-contained instructions, and optionally a check (a shell command run from the project root that proves it is done) and dependsOn (ids of other new or existing steps).`;
 
 /** JSON Schema for the report, passed to ctx.agent so the runtime enforces its shape. */
 export const OUTCOME_SCHEMA: WorkflowJsonSchema = {
@@ -37,7 +37,6 @@ export const OUTCOME_SCHEMA: WorkflowJsonSchema = {
           title: { type: "string" },
           instructions: { type: "string" },
           check: { type: "string" },
-          cwd: { type: "string" },
           dependsOn: { type: "array", items: { type: "string" } },
         },
       },
@@ -55,11 +54,11 @@ export function buildPrompt(wf: Workflow, id: string): string {
     id === GOAL
       ? `## Your step: check the goal (attempt ${data.attempts})\n${GOAL_INSTRUCTIONS}`
       : `## Your step: ${data.title} (id: ${id}, attempt ${data.attempts})\n${data.instructions}`,
-    `Work in: ${wf.cwdOf(id)}`,
+    `Project root: ${wf.root}`,
   ];
   if (data.check) {
     parts.push(
-      `When you report done, the driver runs this exact command from ${wf.cwdOf(id)}, and the step only counts as done if it passes:\n${indent(data.check, "    ")}\nBefore reporting, run it yourself exactly as written from that directory, and fix what fails.`,
+      `When you report done, the driver runs this exact command from the project root, and the step only counts as done if it passes:\n${indent(data.check, "    ")}\nBefore reporting, run it yourself exactly as written from the project root, and fix what fails.`,
     );
   }
 
@@ -83,7 +82,7 @@ export function buildPrompt(wf: Workflow, id: string): string {
   if (others.length) {
     const lines = others.map((other) => {
       const state = other.state === "in-progress" ? "running now" : other.state;
-      return `- [${state}] ${other.id}: ${other.data.title}${other.data.cwd ? ` (in ${other.data.cwd})` : ""}`;
+      return `- [${state}] ${other.id}: ${other.data.title}`;
     });
     parts.push(
       `## Other steps in this workflow\n${lines.join("\n")}\nSteps marked "running now" run at the same time as this one; do not change files they own.`,

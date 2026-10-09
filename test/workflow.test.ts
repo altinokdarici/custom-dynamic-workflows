@@ -28,7 +28,7 @@ test("runs ready steps in parallel up to the concurrency, in dependency order", 
 
   const result = await runPass(wf, { agent: fake.agent, check: fakeCheck().check });
 
-  assert.deepEqual(result, { status: "done", workflowId: wf.id, steps: 5 });
+  assert.deepEqual(result, { status: "done", workflowId: wf.id, steps: 5, answersAndCheckChanges: [] });
   assert.equal(fake.maxRunning, 2);
   const order = fake.order();
   assert.ok(order.indexOf("d#1") > order.indexOf("a#1") && order.indexOf("d#1") > order.indexOf("b#1"));
@@ -56,7 +56,7 @@ test("a failing check is retried with its output, then the step completes", asyn
 
 test("the same failure twice asks the user; the answer reaches the next attempt", async (t) => {
   const root = await tempRoot(t);
-  const wf = create(root, [task("a", { check: "lint", cwd: "pkg" })]);
+  const wf = create(root, [task("a", { check: "lint" })]);
   const fake = fakeAgent();
   // Only the line number differs, so the two failures count as the same.
   const checks = fakeCheck({ lint: [fail("error at line 12"), fail("error at line 13"), pass] });
@@ -66,13 +66,43 @@ test("the same failure twice asks the user; the answer reaches the next attempt"
   assert.equal(first.status, "waiting");
   assert.equal(first.status === "waiting" && first.questions[0]!.nodeId, "a");
   assert.match(wf.node("a").data.question!, /failed the same way twice/);
-  assert.equal(checks.runs[0]!.cwd, join(root, "pkg"));
+  assert.equal(checks.runs[0]!.cwd, root);
 
   wf.answer("a", "Disable that rule only for generated files.");
   const second = await runPass(wf, { agent: fake.agent, check: checks.check });
 
   assert.equal(second.status, "done");
   assert.match(fake.calls.at(-2)!.prompt, /Answer: Disable that rule only for generated files\./);
+});
+
+test("an answer can replace a wrong check; every answer and change is kept and reported", async (t) => {
+  const root = await tempRoot(t);
+  const wf = create(root, [task("a", { check: "cd pkg && cd pkg && npm test" })], 1, { goalCheck: "npm test" });
+  const fake = fakeAgent();
+  const checks = fakeCheck({ "cd pkg && cd pkg && npm test": [fail("no such directory: pkg/pkg")] });
+
+  assert.equal((await runPass(wf, { agent: fake.agent, check: checks.check })).status, "waiting");
+  const entry = wf.answer("a", "The check cds twice; fix it.", "cd pkg && npm test");
+  assert.match(entry, /check changed from `cd pkg && cd pkg && npm test` to `cd pkg && npm test`/);
+
+  const result = await runPass(wf, { agent: fake.agent, check: checks.check });
+  assert.equal(result.status, "done");
+  assert.deepEqual(
+    checks.runs.map((r) => r.command).slice(-2),
+    ["cd pkg && npm test", "npm test"],
+  );
+  assert.doesNotMatch(fake.calls.at(-2)!.prompt, /Previous attempt/, "the old check's failure is dropped with the check");
+  assert.deepEqual(result.status === "done" && result.answersAndCheckChanges, [`a: ${entry}`]);
+  assert.match(wf.statusText(), /Answers and check changes:\n- a: asked .*answered "The check cds twice; fix it\."/);
+});
+
+test("the goal check can't be replaced by an answer", async (t) => {
+  const root = await tempRoot(t);
+  const wf = create(root, [task("a")], 1, { goalCheck: "npm test" });
+  const fake = fakeAgent({ goal: [{ status: "needs_user", summary: "", question: "Tests fail; now what?" }] });
+  assert.equal((await runPass(wf, { agent: fake.agent, check: fakeCheck().check })).status, "waiting");
+  assert.throws(() => wf.answer(GOAL, "skip it", "true"), /definition of done/);
+  assert.equal(wf.node(GOAL).data.check, "npm test");
 });
 
 test("needs_user parks one step while the others finish", async (t) => {
