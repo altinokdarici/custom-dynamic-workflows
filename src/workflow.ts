@@ -155,12 +155,16 @@ export class Workflow {
       for (const id of blocks) {
         const state = g.get(id)?.state;
         if (!state) throw new InputError(`Workflow ${this.id} has no step "${id}".`);
+        // A running goal check already waits for steps added while it runs.
+        if (id === GOAL && state === "in-progress") continue;
         if (state !== "pending" && state !== "ready") {
           throw new InputError(`Step "${id}" is ${state}; only steps that have not started can wait for new steps.`);
         }
       }
       const ids = addTasks(g, tasks);
-      for (const id of blocks) for (const added of ids) g.addDependency(id, added);
+      for (const id of blocks) {
+        if (g.get(id)!.state !== "in-progress") for (const added of ids) g.addDependency(id, added);
+      }
       return ids;
     });
   }
@@ -192,7 +196,7 @@ export class Workflow {
         }
         if (check && !check.ok) return this.retryOrAsk(id, `The check failed:\n${check.output}`);
         return this.#tryTransact(id, (g) => {
-          const ids = addTasks(g, outcome.newTasks ?? []);
+          const ids = addTasks(g, outcome.newTasks ?? [], { reuseUnfinished: true, self: id });
           // Work found while doing a step belongs to it: whatever waited for the step waits for that too.
           for (const dependent of g.dependentsOf(id)) {
             if (dependent === GOAL) continue;
@@ -219,12 +223,14 @@ export class Workflow {
             return "question";
           }
         }
+        const late = this.#unfinishedBeforeGoal(id);
         return this.#tryTransact(id, (g) => {
           g.requeue(id);
           if (requested !== undefined) g.setData(id, { ...g.get(id)!.data, lastRequested: requested });
-          for (const added of addTasks(g, outcome.newTasks!)) {
+          for (const added of addTasks(g, outcome.newTasks!, { reuseUnfinished: true, self: id })) {
             g.addDependency(id, added, { label: "needed first" });
           }
+          for (const dep of late) g.addDependency(id, dep, { label: "added while the goal ran" });
           return "blocked";
         });
       }
@@ -354,19 +360,32 @@ function requestedTitles(tasks: readonly TaskInput[]): string[] {
 
 /**
  * Adds a batch of steps. Ids are slugged; an id already in the graph gets a
- * numeric suffix unless `exactIds` is set. `dependsOn` refers to ids in the
+ * numeric suffix unless `exactIds` is set. With `reuseUnfinished` (reports), an
+ * id that names an existing unfinished step refers to that step instead of
+ * duplicating work already planned. `dependsOn` refers to ids in the
  * batch first, then to existing steps. New steps also become prerequisites of
  * the goal check while it has not started.
  */
-function addTasks(g: Graph, tasks: readonly TaskInput[], { exactIds = false } = {}): string[] {
+function addTasks(
+  g: Graph,
+  tasks: readonly TaskInput[],
+  { exactIds = false, reuseUnfinished = false, self = "" } = {},
+): string[] {
   const keys = tasks.map((task) => slug(task.id));
   const ids = new Map<string, string>();
+  const reused = new Set<string>();
   for (const [i, key] of keys.entries()) {
     if (!key) throw new InputError(`Step "${tasks[i]!.title}" needs an id made of letters or digits.`);
     if (key === GOAL) throw new InputError(`"${GOAL}" is reserved for the final goal check.`);
     if (ids.has(key)) throw new InputError(`Two steps use the id "${key}".`);
     let id = key;
     if (exactIds && g.has(id)) throw new InputError(`A step with id "${id}" already exists.`);
+    const existing = g.get(id);
+    if (reuseUnfinished && existing && id !== self && existing.state !== "completed") {
+      ids.set(key, id);
+      reused.add(id);
+      continue;
+    }
     for (let n = 2; g.has(id) || [...ids.values()].includes(id) || (id !== key && keys.includes(id)); n++) {
       id = `${key}-${n}`;
     }
@@ -374,6 +393,7 @@ function addTasks(g: Graph, tasks: readonly TaskInput[], { exactIds = false } = 
   }
 
   for (const [i, task] of tasks.entries()) {
+    if (reused.has(ids.get(keys[i]!)!)) continue;
     const data: NodeData = { title: task.title, instructions: task.instructions, attempts: 0 };
     if (task.check) data.check = task.check;
     g.addNode(ids.get(keys[i]!)!, data, task.priority === undefined ? {} : { priority: task.priority });
@@ -381,6 +401,7 @@ function addTasks(g: Graph, tasks: readonly TaskInput[], { exactIds = false } = 
 
   for (const [i, task] of tasks.entries()) {
     const id = ids.get(keys[i]!)!;
+    if (reused.has(id)) continue;
     for (const dep of task.dependsOn ?? []) {
       const { id: ref, label } = typeof dep === "string" ? { id: dep, label: undefined } : dep;
       const target = ids.get(slug(ref)) ?? (g.has(ref) ? ref : g.has(slug(ref)) ? slug(ref) : undefined);

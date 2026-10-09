@@ -17,6 +17,7 @@ Every tool takes `cwd`: the absolute path of your current working directory.
    - `instructions`: self-contained. The step's agent sees only these instructions, the goal, and the results of the steps it depends on. Say what to change, where, and what done looks like.
    - `check`: a shell command that proves the step is done, such as `npm test -- foo` or `node scripts/evals.mjs foo`. Add one whenever a command can verify the step. It runs from the repo root; for a step in a worktree, write `cd .worktrees/foo && npm test`.
    - `dependsOn`: only real ordering needs. Use `{ "id": "...", "label": "why" }` when the reason helps the later step.
+   - When a step's result decides the follow-up work (an audit that splits work into groups), tell that step to return the follow-ups as `newTasks` in its report. They are then added before the goal check starts.
 4. `concurrency`: decide how many steps can safely run at once. Steps that run together must not edit the same files or switch branches in the same checkout. For one branch per item, either create a git worktree per item (keep `.worktrees/` git-ignored) and say in the step's instructions to work there, or use concurrency 1.
 5. `goal`: state it as the user would verify it. Add a `goalCheck` command if one exists. It can't be changed later: it is the definition of done.
 
@@ -33,7 +34,7 @@ Every `dw_*` reply ends with what to do next. Follow it until the workflow is do
 Rules:
 - Never do a step's work yourself, never edit a step's report, and never edit `.copilot/workflows/`. The checks only mean something if the step's own subagent did the work.
 - When a step asks a question, put it to the user (with `ask_user` if you have it) and pass their answer to `dw_answer`. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix. To replace a step's check, pass the new one as `check` and tell the user.
-- `dw_add_task` adds a step the user asks for. `dw_status` shows the steps, results, errors and questions.
+- `dw_add_task` adds a step the user asks for. Steps added while the goal check runs make it run again after them. Reports that name an unfinished step's id refer to that step, so they never duplicate it. `dw_status` shows the steps, results, errors and questions.
 - A workflow is driven by the session whose subagents run its steps. If those subagents are gone (a new session, a restart), `dw_run` sends their steps out again with a new attempt number; reports from old attempts are rejected. Never call `dw_run` while your own subagents are still running steps of that workflow.
 
 Workflow state lives in `.copilot/workflows/<id>.json`, which is git-ignored.

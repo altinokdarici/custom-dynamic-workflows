@@ -22432,12 +22432,15 @@ var Workflow = class _Workflow {
       for (const id of blocks) {
         const state = g.get(id)?.state;
         if (!state) throw new InputError(`Workflow ${this.id} has no step "${id}".`);
+        if (id === GOAL && state === "in-progress") continue;
         if (state !== "pending" && state !== "ready") {
           throw new InputError(`Step "${id}" is ${state}; only steps that have not started can wait for new steps.`);
         }
       }
       const ids = addTasks(g, tasks);
-      for (const id of blocks) for (const added of ids) g.addDependency(id, added);
+      for (const id of blocks) {
+        if (g.get(id).state !== "in-progress") for (const added of ids) g.addDependency(id, added);
+      }
       return ids;
     });
   }
@@ -22467,7 +22470,7 @@ var Workflow = class _Workflow {
         if (check2 && !check2.ok) return this.retryOrAsk(id, `The check failed:
 ${check2.output}`);
         return this.#tryTransact(id, (g) => {
-          const ids = addTasks(g, outcome.newTasks ?? []);
+          const ids = addTasks(g, outcome.newTasks ?? [], { reuseUnfinished: true, self: id });
           for (const dependent of g.dependentsOf(id)) {
             if (dependent === GOAL) continue;
             for (const added of ids) g.addDependency(dependent, added, { label: `found by ${id}` });
@@ -22496,12 +22499,14 @@ How should it continue?`
             return "question";
           }
         }
+        const late2 = this.#unfinishedBeforeGoal(id);
         return this.#tryTransact(id, (g) => {
           g.requeue(id);
           if (requested !== void 0) g.setData(id, { ...g.get(id).data, lastRequested: requested });
-          for (const added of addTasks(g, outcome.newTasks)) {
+          for (const added of addTasks(g, outcome.newTasks, { reuseUnfinished: true, self: id })) {
             g.addDependency(id, added, { label: "needed first" });
           }
+          for (const dep of late2) g.addDependency(id, dep, { label: "added while the goal ran" });
           return "blocked";
         });
       }
@@ -22619,27 +22624,36 @@ function effectiveStatus(id, outcome) {
 function requestedTitles(tasks) {
   return tasks.map((t) => t.title.replace(/\s+/g, " ").trim().toLowerCase()).sort();
 }
-function addTasks(g, tasks, { exactIds = false } = {}) {
+function addTasks(g, tasks, { exactIds = false, reuseUnfinished = false, self = "" } = {}) {
   const keys = tasks.map((task) => slug(task.id));
   const ids = /* @__PURE__ */ new Map();
+  const reused = /* @__PURE__ */ new Set();
   for (const [i, key] of keys.entries()) {
     if (!key) throw new InputError(`Step "${tasks[i].title}" needs an id made of letters or digits.`);
     if (key === GOAL) throw new InputError(`"${GOAL}" is reserved for the final goal check.`);
     if (ids.has(key)) throw new InputError(`Two steps use the id "${key}".`);
     let id = key;
     if (exactIds && g.has(id)) throw new InputError(`A step with id "${id}" already exists.`);
+    const existing = g.get(id);
+    if (reuseUnfinished && existing && id !== self && existing.state !== "completed") {
+      ids.set(key, id);
+      reused.add(id);
+      continue;
+    }
     for (let n = 2; g.has(id) || [...ids.values()].includes(id) || id !== key && keys.includes(id); n++) {
       id = `${key}-${n}`;
     }
     ids.set(key, id);
   }
   for (const [i, task] of tasks.entries()) {
+    if (reused.has(ids.get(keys[i]))) continue;
     const data = { title: task.title, instructions: task.instructions, attempts: 0 };
     if (task.check) data.check = task.check;
     g.addNode(ids.get(keys[i]), data, task.priority === void 0 ? {} : { priority: task.priority });
   }
   for (const [i, task] of tasks.entries()) {
     const id = ids.get(keys[i]);
+    if (reused.has(id)) continue;
     for (const dep of task.dependsOn ?? []) {
       const { id: ref, label } = typeof dep === "string" ? { id: dep, label: void 0 } : dep;
       const target2 = ids.get(slug(ref)) ?? (g.has(ref) ? ref : g.has(slug(ref)) ? slug(ref) : void 0);
@@ -23239,7 +23253,7 @@ var tools = [
     handler: (args) => host.view(args)
   }
 ];
-var server = new Server({ name: "dynamic-workflows", version: "0.3.0" }, { capabilities: { tools: {} } });
+var server = new Server({ name: "dynamic-workflows", version: "0.3.1" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))
 }));

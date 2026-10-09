@@ -257,6 +257,31 @@ test("steps added while the goal runs make the goal run again after them", async
   assert.deepEqual(fake.order(), ["a#1", "goal#1", "late#1", "goal#2"]);
 });
 
+test("a goal report naming steps added while it ran waits for them instead of duplicating them", async (t) => {
+  const root = await tempRoot(t);
+  let wf = create(root, [task("audit")]);
+  const host = new Host({ check: fakeCheck().check });
+  const fake = fakeAgent({
+    goal: [
+      async () => {
+        await host.addTask({ cwd: root, workflowId: wf.id, task: task("pr-1"), blocks: [GOAL] });
+        await host.addTask({ cwd: root, workflowId: wf.id, task: task("pr-2"), blocks: [GOAL] });
+        return { status: "blocked", summary: "no PRs yet", newTasks: [task("pr-1"), task("pr-2"), task("pr-3")] };
+      },
+      undefined,
+    ],
+  });
+
+  const result = await runPass(wf, { agent: fake.agent, check: fakeCheck().check, host });
+  wf = result.wf;
+
+  assert.equal(result.status, "done");
+  assert.deepEqual([...wf.graph.nodes()].map((n) => n.id).sort(), ["audit", GOAL, "pr-1", "pr-2", "pr-3"]);
+  const order = fake.order();
+  assert.equal(order.at(-1), "goal#2");
+  assert.equal(order.filter((o) => o.startsWith("pr-")).length, 3);
+});
+
 test("a report that would create a cycle is rejected without touching the graph", async (t) => {
   const root = await tempRoot(t);
   let wf = create(root, [task("a"), task("b", { dependsOn: ["a"] })]);
