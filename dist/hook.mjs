@@ -1,9 +1,11 @@
-// src/extension.ts
-import { defineWorkflow, joinSession } from "@github/copilot-sdk/extension";
+// src/hook.ts
+import { createHash } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as join2 } from "node:path";
 
-// src/check.ts
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+// src/host.ts
+import { execFileSync } from "node:child_process";
 
 // src/text.ts
 function slug(text2, maxLength = 48) {
@@ -12,129 +14,13 @@ function slug(text2, maxLength = 48) {
 function normalizeError(text2) {
   return text2.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
 }
-function tail(text2, maxChars) {
-  return text2.length <= maxChars ? text2 : `\u2026${text2.slice(text2.length - maxChars)}`;
-}
-function indent(text2, prefix = "  ") {
-  return text2.split("\n").map((line) => prefix + line).join("\n");
-}
 
 // src/check.ts
-var OUTPUT_TAIL = 12e3;
 var GROUP = process.platform !== "win32";
-function runCheck(command, cwd, signal) {
-  if (!existsSync(cwd)) {
-    return Promise.resolve({ ok: false, output: `The check directory does not exist: ${cwd}` });
-  }
-  return new Promise((resolve, reject) => {
-    signal?.throwIfAborted();
-    let output = "";
-    const child = spawn(command, { cwd, shell: true, env: { ...process.env, CI: "true" }, detached: GROUP, stdio: ["ignore", "pipe", "pipe"] });
-    const kill = () => {
-      try {
-        if (GROUP && child.pid) process.kill(-child.pid, "SIGTERM");
-        else child.kill();
-      } catch {
-      }
-    };
-    signal?.addEventListener("abort", kill, { once: true });
-    const collect = (chunk) => {
-      output = tail(output + chunk.toString(), OUTPUT_TAIL);
-    };
-    child.stdout.on("data", collect);
-    child.stderr.on("data", collect);
-    child.on("error", (error) => {
-      signal?.removeEventListener("abort", kill);
-      resolve({ ok: false, output: `Could not run the check: ${error.message}` });
-    });
-    child.on("close", (code, killedBy) => {
-      signal?.removeEventListener("abort", kill);
-      if (signal?.aborted) return reject(signal.reason);
-      const status = code === 0 ? "" : `
-(exit ${code ?? killedBy})`;
-      resolve({ ok: code === 0, output: `$ ${command}
-${output.trimEnd()}${status}` });
-    });
-  });
-}
 
 // src/parse.ts
-var STATUSES = ["done", "blocked", "needs_user", "failed"];
 var InputError = class extends Error {
 };
-function parseTasks(raw, where = "tasks") {
-  if (!Array.isArray(raw)) throw new InputError(`${where} must be an array.`);
-  return raw.map((item, i) => parseTask(item, `${where}[${i}]`));
-}
-function parseTask(raw, where = "task") {
-  const o = record(raw, where);
-  const title = text(o.title, `${where}.title`);
-  const task = {
-    id: optionalText(o.id, `${where}.id`) ?? title,
-    title,
-    instructions: text(o.instructions, `${where}.instructions`)
-  };
-  const check = optionalText(o.check, `${where}.check`);
-  if (check) task.check = check;
-  if (o.priority !== void 0 && o.priority !== null) {
-    if (typeof o.priority !== "number" || !Number.isFinite(o.priority)) {
-      throw new InputError(`${where}.priority must be a number.`);
-    }
-    task.priority = o.priority;
-  }
-  if (o.dependsOn !== void 0 && o.dependsOn !== null) {
-    if (!Array.isArray(o.dependsOn)) throw new InputError(`${where}.dependsOn must be an array.`);
-    task.dependsOn = o.dependsOn.map((dep, i) => parseDep(dep, `${where}.dependsOn[${i}]`));
-  }
-  return task;
-}
-function parseDep(raw, where) {
-  if (typeof raw === "string") return text(raw, where);
-  const o = record(raw, where);
-  const id = text(o.id, `${where}.id`);
-  const label = optionalText(o.label, `${where}.label`);
-  return label ? { id, label } : id;
-}
-function parseOutcome(raw) {
-  if (raw === null || raw === void 0) throw new InputError("The step ended without a report.");
-  if (typeof raw === "string") {
-    try {
-      raw = JSON.parse(raw);
-    } catch {
-      throw new InputError("The step's report was not valid JSON.");
-    }
-  }
-  const o = record(raw, "report");
-  if (!STATUSES.includes(o.status)) {
-    throw new InputError(`report.status must be one of: ${STATUSES.join(", ")}.`);
-  }
-  const outcome = {
-    status: o.status,
-    summary: typeof o.summary === "string" ? o.summary.trim() : ""
-  };
-  const question = optionalText(o.question, "report.question");
-  if (question) outcome.question = question;
-  if (o.newTasks !== void 0 && o.newTasks !== null) {
-    const tasks = parseTasks(o.newTasks, "report.newTasks");
-    if (tasks.length) outcome.newTasks = tasks;
-  }
-  return outcome;
-}
-function record(raw, where) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new InputError(`${where} must be an object.`);
-  }
-  return raw;
-}
-function text(raw, where) {
-  if (typeof raw !== "string" || !raw.trim()) throw new InputError(`${where} must be a non-empty string.`);
-  return raw.trim();
-}
-function optionalText(raw, where) {
-  if (raw === void 0 || raw === null) return void 0;
-  if (typeof raw !== "string") throw new InputError(`${where} must be a string.`);
-  return raw.trim() || void 0;
-}
 
 // src/workflow.ts
 import { randomBytes } from "node:crypto";
@@ -1066,7 +952,7 @@ async function writeJsonAtomic(path, value) {
 var GOAL = "goal";
 var GOAL_PRIORITY = Number.MIN_SAFE_INTEGER;
 var OPTIONS = { inheritPriority: true };
-var INTERRUPTED = "Interrupted before it reported (the session or the run ended), so it may have done part of the work. Check the current state before you continue.";
+var INTERRUPTED = "Interrupted before it reported (its subagent or session ended), so it may have done part of the work. Check the current state before you continue.";
 var Workflow = class _Workflow {
   root;
   graph;
@@ -1140,21 +1026,18 @@ var Workflow = class _Workflow {
       question: node.data.question
     }));
   }
-  /** Ready steps, or steps left in progress by a run that stopped. Only meaningful while no run is active. */
-  hasRunnableWork() {
-    return this.graph.count("ready") > 0 || [...this.graph.nodes("in-progress")].some((node) => !this.isWaiting(node));
+  /** Steps handed out to a subagent that has not reported yet. */
+  inFlight() {
+    return [...this.graph.nodes("in-progress")].filter((node) => !this.isWaiting(node));
   }
-  /** Puts steps left in progress by an interrupted run back in the queue, telling their next attempt why. */
+  /** Puts steps whose subagent is gone back in the queue, telling their next attempt why. */
   recover() {
-    let count = 0;
-    for (const node of [...this.graph.nodes("in-progress")]) {
-      if (!this.isWaiting(node)) {
-        this.graph.setData(node.id, { ...node.data, lastError: INTERRUPTED });
-        this.graph.requeue(node.id);
-        count++;
-      }
+    const lost = this.inFlight();
+    for (const node of lost) {
+      this.graph.setData(node.id, { ...node.data, lastError: INTERRUPTED });
+      this.graph.requeue(node.id);
     }
-    return count;
+    return lost.length;
   }
   /** Takes the next ready step and counts the attempt. */
   startNext() {
@@ -1298,14 +1181,6 @@ How should it continue?`);
   changes() {
     return [...this.graph.nodes()].flatMap((node) => (node.data.history ?? []).map((entry) => `${node.id}: ${entry}`));
   }
-  passResult() {
-    if (this.graph.isComplete) {
-      return { status: "done", workflowId: this.id, steps: this.graph.size, answersAndCheckChanges: this.changes() };
-    }
-    const questions = this.questions();
-    if (questions.length) return { status: "waiting", workflowId: this.id, questions };
-    return { status: "stuck", workflowId: this.id, summary: this.statusText() };
-  }
   statusText() {
     const g = this.graph;
     const counts = ["completed", "in-progress", "ready", "pending"].map((state) => `${g.count(state)} ${state}`).join(", ");
@@ -1405,20 +1280,6 @@ function clip(text2, max = 300) {
 }
 
 // src/prompt.ts
-var GOAL_INSTRUCTIONS = `Every other step reports done. Check that the goal above is really met: inspect the actual files, branches, commits and command output instead of trusting the summaries below.
-- If it is met, report done.
-- If anything is missing or wrong, report blocked and describe the fixes as newTasks.`;
-var RULES = `## Rules
-- Do this step only. Other steps take care of the rest of the goal.
-- Do not call any dw_* tool and do not edit .copilot/workflows; the workflow driver owns them.
-- Never weaken, skip or delete checks or tests to make them pass.`;
-var REPORT = `## Report
-Finish with a report:
-- "done": the step is finished. In summary, say what you did and what later steps need to know (paths, branch names, decisions). If you noticed work outside this step, add it as newTasks instead of doing it.
-- "blocked": something else must happen before this step can finish. Describe it as newTasks; this step runs again after them.
-- "needs_user": only the user can decide something. Ask in question; this step runs again with the answer.
-- "failed": the step cannot be done. Say why in summary.
-Each newTasks item has an id (short, kebab-case), a title, self-contained instructions, and optionally a check (a shell command run from the project root that proves it is done) and dependsOn (ids of other new or existing steps).`;
 var OUTCOME_SCHEMA = {
   type: "object",
   required: ["status", "summary"],
@@ -1442,349 +1303,48 @@ var OUTCOME_SCHEMA = {
     }
   }
 };
-function buildPrompt(wf, id) {
-  const node = wf.node(id);
-  const data = node.data;
-  const parts = [
-    "You are running one step of a larger workflow. Do the step completely, then report.",
-    `## Workflow goal
-${wf.goal}`,
-    id === GOAL ? `## Your step: check the goal (attempt ${data.attempts})
-${GOAL_INSTRUCTIONS}` : `## Your step: ${data.title} (id: ${id}, attempt ${data.attempts})
-${data.instructions}`,
-    `Project root: ${wf.root}`
-  ];
-  if (data.check) {
-    parts.push(
-      `When you report done, the driver runs this exact command from the project root, and the step only counts as done if it passes:
-${indent(data.check, "    ")}
-Before reporting, run it yourself exactly as written from the project root, and fix what fails.`
-    );
-  }
-  const deps = wf.graph.dependencyEdges(id);
-  if (deps.length) {
-    const lines = deps.map((edge) => {
-      const dep = wf.node(edge.dependsOn);
-      const label = edge.data?.label ? ` (${edge.data.label})` : "";
-      return `- ${dep.id}: ${dep.data.title}${label}
-${indent(dep.data.result ?? "(no summary)", "    ")}`;
-    });
-    parts.push(`## Steps this one waited for
-${lines.join("\n")}`);
-  }
-  if (data.lastError) parts.push(`## Previous attempt
-The previous attempt did not succeed:
-${indent(data.lastError)}`);
-  if (data.question) {
-    parts.push(`## Your question to the user
-${data.question}
+var REPORT = `## Report
+Finish with a report:
+- "done": the step is finished. In summary, say what you did and what later steps need to know (paths, branch names, decisions). If you noticed work outside this step, add it as newTasks instead of doing it.
+- "blocked": something else must happen before this step can finish. Describe it as newTasks; this step runs again after them.
+- "needs_user": only the user can decide something. Ask in question; this step runs again with the answer.
+- "failed": the step cannot be done. Say why in summary.
+Each newTasks item has an id (short, kebab-case), a title, self-contained instructions, and optionally a check (a shell command run from the project root that proves it is done) and dependsOn (ids of other new or existing steps).
 
-Answer: ${data.answer ?? "(none yet)"}`);
-  }
-  const depIds = new Set(deps.map((edge) => edge.dependsOn));
-  const others = [...wf.graph.nodes()].filter((other) => other.id !== id && other.id !== GOAL && !depIds.has(other.id));
-  if (others.length) {
-    const lines = others.map((other) => {
-      const state = other.state === "in-progress" ? "running now" : other.state;
-      return `- [${state}] ${other.id}: ${other.data.title}`;
-    });
-    parts.push(
-      `## Other steps in this workflow
-${lines.join("\n")}
-Steps marked "running now" run at the same time as this one; do not change files they own.`
-    );
-  }
-  parts.push(RULES, REPORT);
-  return parts.join("\n\n");
-}
-
-// src/driver.ts
-var Wake = class {
-  #promise;
-  #resolve;
-  wait() {
-    this.#promise ??= new Promise((resolve) => this.#resolve = resolve);
-    return this.#promise;
-  }
-  notify() {
-    const resolve = this.#resolve;
-    this.#promise = this.#resolve = void 0;
-    resolve?.();
-  }
-};
-async function runPass(wf, options) {
-  const signal = options.signal ?? new AbortController().signal;
-  const log2 = options.log ?? (() => {
-  });
-  const recovered = wf.recover();
-  if (recovered) log2(`Requeued ${recovered} interrupted step(s).`);
-  const running = /* @__PURE__ */ new Map();
-  let failure;
-  for (; ; ) {
-    while (!failure && !signal.aborted && running.size < wf.concurrency) {
-      const node = wf.startNext();
-      if (!node) break;
-      log2(`\u25B6 ${node.id} (attempt ${node.data.attempts})`);
-      const step = runStep(wf, node.id, options, signal, log2).catch((error) => {
-        failure ??= { error };
-      }).finally(() => running.delete(node.id));
-      running.set(node.id, step);
-    }
-    if (running.size === 0) break;
-    await Promise.race([...running.values(), options.wake?.wait() ?? new Promise(() => {
-    })]);
-  }
-  await wf.flush();
-  if (failure) throw failure.error;
-  signal.throwIfAborted();
-  return wf.passResult();
-}
-async function runStep(wf, id, options, signal, log2) {
-  const attempt = wf.node(id).data.attempts;
-  const raw = await options.agent(buildPrompt(wf, id), `${id}#${attempt}`);
-  let applied;
-  try {
-    const outcome = parseOutcome(raw);
-    const command = wf.checkFor(id, outcome);
-    const check = command === void 0 ? void 0 : await options.check(command, wf.root, signal);
-    if (check) log2(`${check.ok ? "\u2713" : "\u2717"} check for ${id}`);
-    applied = wf.apply(id, outcome, check);
-  } catch (error) {
-    if (!(error instanceof InputError)) throw error;
-    applied = wf.retryOrAsk(id, error.message);
-  }
-  log2(`${id}: ${applied}`);
-  if (applied === "question") {
-    const question = wf.questions().find((q) => q.nodeId === id);
-    if (question) options.onQuestion?.(question);
-  }
-}
+End your final message with the report as one JSON object in a \`\`\`json block, matching this schema:
+${"```"}json
+${JSON.stringify(OUTCOME_SCHEMA)}
+${"```"}`;
 
 // src/host.ts
-import { execFileSync } from "node:child_process";
-var Host = class {
-  #options;
-  #workflows = /* @__PURE__ */ new Map();
-  /** Workflows a pass of this process drives. */
-  #active = /* @__PURE__ */ new Map();
-  #wakes = /* @__PURE__ */ new Map();
-  #skipped = /* @__PURE__ */ new Set();
-  #queue = Promise.resolve();
-  #root;
-  constructor(options) {
-    this.#options = options;
-  }
-  get root() {
-    const { root } = this.#options;
-    return this.#root ??= typeof root === "function" ? root() : root;
-  }
-  /** Re-reads the project's workflow files, which other processes may have created or changed. They resume only when asked (dw_run). */
-  load() {
-    return this.#serial(() => this.#load());
-  }
-  get(id) {
-    const wf = this.#workflows.get(id);
-    if (!wf) {
-      const known = [...this.#workflows.keys()].join(", ") || "none";
-      throw new InputError(`There is no workflow "${id}". Known workflows: ${known}.`);
-    }
-    return wf;
-  }
-  wake(id) {
-    let wake = this.#wakes.get(id);
-    if (!wake) this.#wakes.set(id, wake = new Wake());
-    return wake;
-  }
-  isRunning(id) {
-    return this.#active.has(id);
-  }
-  /** Workflows of this project that are paused with work left. Call after load(). */
-  paused() {
-    return [...this.#workflows.values()].filter(
-      (wf) => isPaused({ running: this.#active.has(wf.id), complete: wf.graph.isComplete, runnableWork: wf.hasRunnableWork() })
-    );
-  }
-  /** Open questions of every workflow. Call after load(). */
-  questions() {
-    return [...this.#workflows.values()].flatMap((wf) => wf.questions());
-  }
-  /** Resolves when no pass of the workflow is running. */
-  async idle(id, signal) {
-    const active = this.#active.get(id);
-    if (!active) return;
-    if (!signal) return active;
-    signal.throwIfAborted();
-    await new Promise((resolve, reject) => {
-      const onAbort = () => reject(signal.reason);
-      signal.addEventListener("abort", onAbort, { once: true });
-      active.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-    });
-  }
-  async plan(rawArgs) {
-    const args = record(rawArgs, "arguments");
-    const input = {
-      goal: text(args.goal, "goal"),
-      concurrency: args.concurrency,
-      tasks: parseTasks(args.tasks),
-      goalCheck: optionalText(args.goalCheck, "goalCheck")
-    };
-    return this.#serial(async () => {
-      const created = Workflow.create(this.root, input);
-      this.#workflows.set(created.id, created);
-      await created.flush();
-      await this.#change(created.id);
-      const lead = `Started workflow ${created.id}. It runs in the background; you get a notification when it finishes or needs the user.`;
-      return [lead, this.#statusText(this.get(created.id))].join("\n\n");
-    });
-  }
-  async run(rawArgs) {
-    const args = record(rawArgs, "arguments");
-    const id = text(args.workflowId, "workflowId");
-    const { concurrency } = args;
-    return this.#serial(async () => {
-      const state = await this.#change(id, (wf) => {
-        if (concurrency !== void 0 && concurrency !== null) wf.concurrency = concurrency;
-      });
-      const lead = {
-        started: "Resumed.",
-        running: "Already running.",
-        idle: "Nothing to run right now."
-      }[state];
-      return `${lead}
-
-${this.#statusText(this.get(id))}`;
-    });
-  }
-  async addTask(rawArgs) {
-    const args = record(rawArgs, "arguments");
-    const id = text(args.workflowId, "workflowId");
-    const task = parseTask(args.task);
-    const rawBlocks = args.blocks === void 0 || args.blocks === null ? [] : args.blocks;
-    if (!Array.isArray(rawBlocks)) throw new InputError("blocks must be an array of step ids.");
-    const blocks = rawBlocks.map((b, i) => text(b, `blocks[${i}]`));
-    return this.#serial(async () => {
-      let added = [];
-      await this.#change(id, (wf) => {
-        added = wf.addTasks([task], blocks);
-      });
-      return `Added step "${added[0]}" to workflow ${id}.`;
-    });
-  }
-  async answer(rawArgs) {
-    const args = record(rawArgs, "arguments");
-    const id = text(args.workflowId, "workflowId");
-    const nodeId = text(args.nodeId, "nodeId");
-    const answer = text(args.answer, "answer");
-    const check = optionalText(args.check, "check");
-    return this.#serial(async () => {
-      let note = "";
-      await this.#change(id, (wf) => {
-        note = wf.answer(nodeId, answer, check);
-      });
-      this.#log(`Workflow ${id}, step "${nodeId}": ${note}`, check ? "warning" : "info");
-      return `Answered. Step "${nodeId}" of workflow ${id} runs again with the answer.`;
-    });
-  }
-  async status(rawArgs, signal) {
-    const args = rawArgs === void 0 || rawArgs === null ? {} : record(rawArgs, "arguments");
-    const id = optionalText(args.workflowId, "workflowId");
-    if (!id) {
-      return this.#serial(async () => {
-        await this.#load();
-        if (!this.#workflows.size) return `No workflows in ${this.root}.`;
-        return [...this.#workflows.values()].map((wf2) => `- ${wf2.id}: ${this.#state(wf2)}. ${wf2.goal}`).join("\n");
-      });
-    }
-    const wf = await this.#serial(async () => {
-      await this.#load();
-      return this.get(id);
-    });
-    if (args.wait === true) await this.idle(wf.id, signal);
-    return this.#statusText(wf);
-  }
-  /**
-   * Applies `change` to a workflow, then starts a pass for the work it leaves
-   * or wakes the running one. A workflow no pass of this process drives is
-   * read from disk first, since another session may have changed it.
-   */
-  async #change(id, change = () => {
-  }) {
-    await this.#load();
-    const wf = this.get(id);
-    change(wf);
-    if (this.#active.has(id)) {
-      this.wake(id).notify();
-      await wf.flush();
-      return "running";
-    }
-    await wf.flush();
-    if (!wf.hasRunnableWork()) return "idle";
-    const loop = this.#drive(wf).finally(() => this.#active.delete(id));
-    this.#active.set(id, loop);
-    return "started";
-  }
-  /** Re-reads the workflow files. A workflow a pass of this process drives is current in memory and kept. */
-  async #load() {
-    const skip = (path, error) => {
-      if (this.#skipped.has(path)) return;
-      this.#skipped.add(path);
-      this.#log(`Skipping ${path}: ${error.message}`, "warning");
-    };
-    const files = await loadWorkflowFiles(this.root, skip);
-    const found = /* @__PURE__ */ new Set();
-    for (const { path, doc } of files) {
-      if (this.#active.has(doc.id)) {
-        found.add(doc.id);
-        continue;
-      }
-      try {
-        this.#workflows.set(doc.id, Workflow.load(this.root, path, doc));
-        found.add(doc.id);
-      } catch (error) {
-        skip(path, error);
-      }
-    }
-    for (const id of this.#workflows.keys()) {
-      if (!found.has(id) && !this.#active.has(id)) this.#workflows.delete(id);
-    }
-  }
-  /** Runs tool calls one at a time, so a re-read never replaces a workflow that another call is changing. */
-  #serial(task) {
-    const result = this.#queue.then(task);
-    this.#queue = result.catch(() => {
-    });
-    return result;
-  }
-  /** Runs passes until one ends with nothing left to start. Never rejects. */
-  async #drive(wf) {
+var ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to dw_answer. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
+function questionsText(questions) {
+  const lines = questions.map((q) => `- workflow ${q.workflowId}, step ${q.nodeId} (${q.title}): ${q.question}`);
+  return `Steps waiting for the user's answer:
+${lines.join("\n")}
+${ASK}`;
+}
+function stateOf(wf) {
+  if (wf.graph.isComplete) return "done";
+  const parts = [];
+  const out = wf.inFlight().length;
+  if (out) parts.push(`${out} step(s) handed out to subagents`);
+  const asking = wf.questions().length;
+  if (asking) parts.push(`${asking} step(s) wait for the user's answer`);
+  if (!out && wf.graph.count("ready")) parts.push("paused (dw_run resumes it)");
+  return parts.join("; ") || "stuck";
+}
+async function loadAll(root) {
+  const files = await loadWorkflowFiles(root, () => {
+  });
+  const all = [];
+  for (const { path, doc } of files) {
     try {
-      do {
-        const result = await this.#options.startPass(wf);
-        if (!result) return;
-        if (result.status === "done") this.#log(`Workflow ${wf.id} is done.`);
-      } while (wf.hasRunnableWork());
-    } catch (error) {
-      this.#log(`Workflow ${wf.id} stopped: ${error?.message ?? String(error)}`, "error");
+      all.push(Workflow.load(root, path, doc));
+    } catch {
     }
   }
-  #state(wf) {
-    const questions = wf.questions().length;
-    const asking = questions ? `${questions} step(s) wait for the user's answer (dw_answer)` : "";
-    if (this.#active.has(wf.id)) return asking ? `running; ${asking}` : "running";
-    if (wf.graph.isComplete) return "done";
-    if (asking) return asking;
-    return wf.hasRunnableWork() ? "paused (dw_run resumes it)" : "idle";
-  }
-  #statusText(wf) {
-    return `State: ${this.#state(wf)}
-${wf.statusText()}`;
-  }
-  #log(message, level = "info") {
-    this.#options.log?.(message, level);
-  }
-};
-function isPaused(state) {
-  return !state.running && !state.complete && state.runnableWork;
+  return all;
 }
 function projectRoot(cwd) {
   try {
@@ -1799,191 +1359,51 @@ function projectRoot(cwd) {
   }
 }
 
-// src/extension.ts
-var session;
-var pausedHinted = false;
-function log(message, level = "info") {
-  session?.log(message, { level }).catch(() => {
+// src/hook.ts
+async function main() {
+  const input = JSON.parse(await readStdin());
+  if (!input.cwd) return;
+  const root = projectRoot(input.cwd);
+  const all = await loadAll(root);
+  if (!all.length) return;
+  const parts = [];
+  const questions = all.flatMap((wf) => wf.questions());
+  if (questions.length) {
+    parts.push(
+      `Dynamic workflow ${questionsText(questions)} If the user's message answers one, pass it to dw_answer (cwd ${root}). Otherwise mention that these questions are open.`
+    );
+  }
+  const left = all.filter((wf) => !wf.graph.isComplete && (wf.inFlight().length || wf.graph.count("ready")));
+  const session = input.session_id ?? input.sessionId;
+  if (left.length && session && firstTime(session, root)) {
+    const lines = left.map((wf) => `- ${wf.id}: ${stateOf(wf)}. ${wf.goal}`);
+    parts.push(
+      `These dynamic workflows of ${root} have work left:
+${lines.join("\n")}
+Mention them to the user. If the user wants to continue one, call dw_run (it requeues steps whose subagents are gone). Never resume without the user asking.`
+    );
+  }
+  if (parts.length) process.stdout.write(JSON.stringify({ additionalContext: parts.join("\n\n") }));
+}
+function firstTime(session, root) {
+  const dir = join2(tmpdir(), "dynamic-workflows-hook");
+  const key = createHash("sha256").update(`${session}
+${root}`).digest("hex").slice(0, 32);
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join2(dir, key), "", { flag: "wx" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function readStdin() {
+  return new Promise((resolve) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => data += chunk);
+    process.stdin.on("end", () => resolve(data));
   });
 }
-var host = new Host({
-  root: () => projectRoot(process.cwd()),
-  startPass: async (wf) => {
-    if (!session) throw new Error("The extension is not connected to a session yet.");
-    const run = await session.workflow.run(drive, { args: { workflowId: wf.id }, notifyOnComplete: true });
-    if (run.status === "completed") return run.result;
-    log(`Workflow ${wf.id}: run ${run.runId} ended ${run.status}${run.error ? `: ${run.error}` : ""}.`, "warning");
-    return void 0;
-  },
-  log
-});
-var drive = defineWorkflow({
-  meta: {
-    name: "dw-drive",
-    description: "Runs the ready steps of a dynamic workflow until it is done or waits for the user.",
-    phases: [{ title: "Run steps" }],
-    argsSchema: { type: "object", required: ["workflowId"], properties: { workflowId: { type: "string" } } }
-  },
-  run: async (ctx) => {
-    const wf = host.get(ctx.args.workflowId);
-    ctx.phase("Run steps");
-    return runPass(wf, {
-      agent: (prompt, label) => ctx.agent(prompt, { label, schema: OUTCOME_SCHEMA }),
-      check: runCheck,
-      wake: host.wake(wf.id),
-      signal: ctx.signal,
-      log: (message) => ctx.log(message),
-      onQuestion: (q) => log(`Workflow ${q.workflowId}: step "${q.nodeId}" asks: ${q.question}`, "warning")
-    });
-  }
-});
-var TASK_SCHEMA = {
-  type: "object",
-  required: ["id", "title", "instructions"],
-  properties: {
-    id: { type: "string", description: "Unique kebab-case id, e.g. migrate-skill-foo." },
-    title: { type: "string", description: "Short name of the step." },
-    instructions: {
-      type: "string",
-      description: "Self-contained instructions: what to do, where, and what done looks like. The step's agent sees only these, the goal, and the results of the steps it depends on."
-    },
-    check: {
-      type: "string",
-      description: "Shell command the driver runs from the repo root after the step reports done; exit code 0 means done. For a step in a worktree, cd into it first: `cd .worktrees/foo && npm test`. Prefer one whenever done can be verified by a command."
-    },
-    priority: { type: "number", description: "Among ready steps, higher runs first. Default 0." },
-    dependsOn: {
-      type: "array",
-      description: "Steps that must finish first: ids, or {id, label} where the label says why.",
-      items: {
-        anyOf: [
-          { type: "string" },
-          { type: "object", required: ["id"], properties: { id: { type: "string" }, label: { type: "string" } } }
-        ]
-      }
-    }
-  }
-};
-var WORKFLOW_ID = { type: "string", description: "Workflow id returned by dw_plan." };
-function tool(name, description, parameters, handler, options = {}) {
-  return {
-    name,
-    description,
-    parameters,
-    defer: "never",
-    ...options,
-    handler: async (args, invocation) => {
-      try {
-        return await handler(args, invocation.signal);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { textResultForLlm: `Error: ${message}`, resultType: "failure", error: message };
-      }
-    }
-  };
-}
-var tools = [
-  tool(
-    "dw_plan",
-    "Start a dynamic workflow: a dependency graph of steps that runs in the background until every step is done and a final goal check passes. Each step runs as its own agent; ready steps run in parallel up to `concurrency`. Steps can add follow-up steps, and failing checks are retried with their output. Use for work that splits into several stage-sized steps (see the dynamic-workflow skill).",
-    {
-      type: "object",
-      required: ["goal", "concurrency", "tasks"],
-      properties: {
-        goal: { type: "string", description: "What the whole workflow must achieve, as the user would check it." },
-        concurrency: {
-          type: "number",
-          description: "How many steps may run at once. Choose it from how independent the steps are: steps running together must not edit the same files (use separate git worktrees for parallel branch work)."
-        },
-        tasks: { type: "array", items: TASK_SCHEMA, description: "The steps. Ids must be unique." },
-        goalCheck: {
-          type: "string",
-          description: "Optional shell command, run from the repo root, that must pass for the goal check to succeed. It can't be changed later."
-        }
-      }
-    },
-    (args) => host.plan(args)
-  ),
-  tool(
-    "dw_run",
-    "Resume a workflow that is paused (for example after a restart or an error), optionally changing its concurrency.",
-    {
-      type: "object",
-      required: ["workflowId"],
-      properties: { workflowId: WORKFLOW_ID, concurrency: { type: "number" } }
-    },
-    (args) => host.run(args)
-  ),
-  tool(
-    "dw_add_task",
-    "Add a step to a workflow. `blocks` lists existing steps that have not started yet and must wait for the new one.",
-    {
-      type: "object",
-      required: ["workflowId", "task"],
-      properties: {
-        workflowId: WORKFLOW_ID,
-        task: TASK_SCHEMA,
-        blocks: { type: "array", items: { type: "string" } }
-      }
-    },
-    (args) => host.addTask(args)
-  ),
-  tool(
-    "dw_answer",
-    "Answer a question a workflow step asked the user, with the user's answer. If the step's check is wrong, pass a corrected `check` to replace it (not for the goal check). The step then runs again with the answer. Every answer and check change is shown to the user and kept in the workflow.",
-    {
-      type: "object",
-      required: ["workflowId", "nodeId", "answer"],
-      properties: {
-        workflowId: WORKFLOW_ID,
-        nodeId: { type: "string" },
-        answer: { type: "string" },
-        check: { type: "string", description: "Replaces the step's check, run from the repo root." }
-      }
-    },
-    (args) => host.answer(args),
-    { skipPermission: true }
-  ),
-  tool(
-    "dw_status",
-    "Show a workflow's steps, results, errors and open questions, or list all workflows when workflowId is omitted. With wait=true, first wait until the workflow stops running (done, or waiting for the user).",
-    {
-      type: "object",
-      properties: { workflowId: WORKFLOW_ID, wait: { type: "boolean" } }
-    },
-    (args, signal) => host.status(args, signal),
-    { skipPermission: true }
-  )
-];
-session = await joinSession({
-  workflows: [drive],
-  tools,
-  hooks: {
-    onUserPromptSubmitted: async () => {
-      await host.load();
-      const parts = [];
-      const questions = host.questions();
-      if (questions.length) {
-        const lines = questions.map((q) => `- workflow ${q.workflowId}, step ${q.nodeId} (${q.title}): ${q.question}`);
-        parts.push(
-          `Dynamic workflow steps are waiting for the user's answer:
-${lines.join("\n")}
-If the user's message answers one, pass it to dw_answer. Otherwise mention that these questions are open.`
-        );
-      }
-      if (!pausedHinted) {
-        pausedHinted = true;
-        const paused = host.paused();
-        if (paused.length) {
-          const lines = paused.map((wf) => `- ${wf.id}: ${wf.goal}`);
-          parts.push(
-            `These dynamic workflows of this project are paused with work left:
-${lines.join("\n")}
-Mention them to the user and offer to resume with dw_run. Never resume without the user asking.`
-          );
-        }
-      }
-      if (parts.length) return { additionalContext: parts.join("\n\n") };
-    }
-  }
+main().catch(() => {
 });

@@ -1,6 +1,5 @@
 import { indent } from "./text.ts";
 import { GOAL, type Workflow } from "./workflow.ts";
-import type { WorkflowJsonSchema } from "@github/copilot-sdk/extension";
 
 const GOAL_INSTRUCTIONS = `Every other step reports done. Check that the goal above is really met: inspect the actual files, branches, commits and command output instead of trusting the summaries below.
 - If it is met, report done.
@@ -8,19 +7,13 @@ const GOAL_INSTRUCTIONS = `Every other step reports done. Check that the goal ab
 
 const RULES = `## Rules
 - Do this step only. Other steps take care of the rest of the goal.
-- Do not call any dw_* tool and do not edit .copilot/workflows; the workflow driver owns them.
+- Do not call any dw_* tool and do not edit .copilot/workflows; the workflow owns them.
 - Never weaken, skip or delete checks or tests to make them pass.`;
 
-const REPORT = `## Report
-Finish with a report:
-- "done": the step is finished. In summary, say what you did and what later steps need to know (paths, branch names, decisions). If you noticed work outside this step, add it as newTasks instead of doing it.
-- "blocked": something else must happen before this step can finish. Describe it as newTasks; this step runs again after them.
-- "needs_user": only the user can decide something. Ask in question; this step runs again with the answer.
-- "failed": the step cannot be done. Say why in summary.
-Each newTasks item has an id (short, kebab-case), a title, self-contained instructions, and optionally a check (a shell command run from the project root that proves it is done) and dependsOn (ids of other new or existing steps).`;
 
-/** JSON Schema for the report, passed to ctx.agent so the runtime enforces its shape. */
-export const OUTCOME_SCHEMA: WorkflowJsonSchema = {
+
+/** JSON Schema of the report, shown to the step agent. parseOutcome enforces it. */
+export const OUTCOME_SCHEMA = {
   type: "object",
   required: ["status", "summary"],
   properties: {
@@ -44,6 +37,19 @@ export const OUTCOME_SCHEMA: WorkflowJsonSchema = {
   },
 };
 
+const REPORT = `## Report
+Finish with a report:
+- "done": the step is finished. In summary, say what you did and what later steps need to know (paths, branch names, decisions). If you noticed work outside this step, add it as newTasks instead of doing it.
+- "blocked": something else must happen before this step can finish. Describe it as newTasks; this step runs again after them.
+- "needs_user": only the user can decide something. Ask in question; this step runs again with the answer.
+- "failed": the step cannot be done. Say why in summary.
+Each newTasks item has an id (short, kebab-case), a title, self-contained instructions, and optionally a check (a shell command run from the project root that proves it is done) and dependsOn (ids of other new or existing steps).
+
+End your final message with the report as one JSON object in a \`\`\`json block, matching this schema:
+${"```"}json
+${JSON.stringify(OUTCOME_SCHEMA)}
+${"```"}`;
+
 /** Everything one step's agent needs, built fresh for every attempt. */
 export function buildPrompt(wf: Workflow, id: string): string {
   const node = wf.node(id);
@@ -58,7 +64,7 @@ export function buildPrompt(wf: Workflow, id: string): string {
   ];
   if (data.check) {
     parts.push(
-      `When you report done, the driver runs this exact command from the project root, and the step only counts as done if it passes:\n${indent(data.check, "    ")}\nBefore reporting, run it yourself exactly as written from the project root, and fix what fails.`,
+      `When you report done, the workflow runs this exact command from the project root, and the step only counts as done if it passes:\n${indent(data.check, "    ")}\nBefore reporting, run it yourself exactly as written from the project root, and fix what fails.`,
     );
   }
 

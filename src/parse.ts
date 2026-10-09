@@ -44,13 +44,7 @@ function parseDep(raw: unknown, where: string): DepInput {
 /** Validates a step agent's report. */
 export function parseOutcome(raw: unknown): Outcome {
   if (raw === null || raw === undefined) throw new InputError("The step ended without a report.");
-  if (typeof raw === "string") {
-    try {
-      raw = JSON.parse(raw);
-    } catch {
-      throw new InputError("The step's report was not valid JSON.");
-    }
-  }
+  if (typeof raw === "string") raw = extractJson(raw);
   const o = record(raw, "report");
   if (!STATUSES.includes(o.status as OutcomeStatus)) {
     throw new InputError(`report.status must be one of: ${STATUSES.join(", ")}.`);
@@ -66,6 +60,26 @@ export function parseOutcome(raw: unknown): Outcome {
     if (tasks.length) outcome.newTasks = tasks;
   }
   return outcome;
+}
+
+/**
+ * The report from a step agent's final message: the whole message as JSON,
+ * else its last json code block, else the text from its first "{" to its last "}".
+ */
+function extractJson(message: string): unknown {
+  const fenced = [...message.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((m) => m[1]!);
+  const start = message.indexOf("{");
+  const end = message.lastIndexOf("}");
+  const candidates = [message, fenced.at(-1), start >= 0 && end > start ? message.slice(start, end + 1) : undefined];
+  for (const candidate of candidates) {
+    if (!candidate?.trim()) continue;
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  throw new InputError("The step's final message had no JSON report.");
 }
 
 export function record(raw: unknown, where: string): Record<string, unknown> {

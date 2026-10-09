@@ -8,7 +8,6 @@ import type {
   EdgeData,
   NodeData,
   Outcome,
-  PassResult,
   Question,
   TaskInput,
   WorkflowFile,
@@ -20,7 +19,7 @@ export const GOAL = "goal";
 const GOAL_PRIORITY = Number.MIN_SAFE_INTEGER;
 const OPTIONS = { inheritPriority: true };
 const INTERRUPTED =
-  "Interrupted before it reported (the session or the run ended), so it may have done part of the work. Check the current state before you continue.";
+  "Interrupted before it reported (its subagent or session ended), so it may have done part of the work. Check the current state before you continue.";
 
 type Graph = PriorityGraph<NodeData, EdgeData>;
 type Node = GraphNode<NodeData>;
@@ -127,24 +126,19 @@ export class Workflow {
       }));
   }
 
-  /** Ready steps, or steps left in progress by a run that stopped. Only meaningful while no run is active. */
-  hasRunnableWork(): boolean {
-    return (
-      this.graph.count("ready") > 0 || [...this.graph.nodes("in-progress")].some((node) => !this.isWaiting(node))
-    );
+  /** Steps handed out to a subagent that has not reported yet. */
+  inFlight(): Node[] {
+    return [...this.graph.nodes("in-progress")].filter((node) => !this.isWaiting(node));
   }
 
-  /** Puts steps left in progress by an interrupted run back in the queue, telling their next attempt why. */
+  /** Puts steps whose subagent is gone back in the queue, telling their next attempt why. */
   recover(): number {
-    let count = 0;
-    for (const node of [...this.graph.nodes("in-progress")]) {
-      if (!this.isWaiting(node)) {
-        this.graph.setData(node.id, { ...node.data, lastError: INTERRUPTED });
-        this.graph.requeue(node.id);
-        count++;
-      }
+    const lost = this.inFlight();
+    for (const node of lost) {
+      this.graph.setData(node.id, { ...node.data, lastError: INTERRUPTED });
+      this.graph.requeue(node.id);
     }
-    return count;
+    return lost.length;
   }
 
   /** Takes the next ready step and counts the attempt. */
@@ -288,15 +282,6 @@ export class Workflow {
   /** Every answer and check change, per step. */
   changes(): string[] {
     return [...this.graph.nodes()].flatMap((node) => (node.data.history ?? []).map((entry) => `${node.id}: ${entry}`));
-  }
-
-  passResult(): PassResult {
-    if (this.graph.isComplete) {
-      return { status: "done", workflowId: this.id, steps: this.graph.size, answersAndCheckChanges: this.changes() };
-    }
-    const questions = this.questions();
-    if (questions.length) return { status: "waiting", workflowId: this.id, questions };
-    return { status: "stuck", workflowId: this.id, summary: this.statusText() };
   }
 
   statusText(): string {

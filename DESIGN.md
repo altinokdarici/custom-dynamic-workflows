@@ -1,6 +1,6 @@
 # custom-dynamic-workflows: Design
 
-Status: v1, built and tried. Owner: Altinok Darici.
+Status: v1 (plugin 0.2: MCP server, hook and skill), built and tried. Owner: Altinok Darici.
 
 v1 is deliberately small. It replaces the larger v2 design; §12 lists what was cut and why.
 
@@ -25,21 +25,25 @@ No code can make an impossible task finish or an absent user answer. What the pl
 | Piece | Role |
 | --- | --- |
 | [p-graph](https://github.com/altinokdarici/p-graph) | Dynamic priority graph with edge data. Holds node state (pending, ready, in-progress, completed) and readiness, and hands every change to a store. |
-| Copilot CLI extension (`@github/copilot-sdk/extension`) | A process joined to the session. Registers the `dw_*` tools and a prompt hook. |
-| SDK dynamic workflow `dw-drive` | One pass over a workflow. Runs steps as subagents with `ctx.agent` and a report schema. |
-| Skill `dynamic-workflow` | Tells the main agent how to plan: stage-sized steps, checks, dependencies, worktrees and concurrency. |
+| MCP server `dynamic-workflows` (stdio) | The `dw_*` tools. Owns the graph, the rules and the checks. Hands steps out to the main agent and takes their reports back. |
+| `UserPromptSubmit` hook | On every prompt: open questions. Once per session: workflows with work left. |
+| Skill `dynamic-workflow` | Tells the main agent how to plan (stage-sized steps, checks, dependencies, worktrees, concurrency) and how to run the steps as subagents. |
 
 ```
-.claude-plugin/plugin.json                  { "extensions": "extensions/", "skills": "skills/" }
-extensions/dynamic-workflows/extension.mjs  bundle of src/ and p-graph (the SDK stays external)
+.claude-plugin/plugin.json   name, version, "skills": "skills/"
+.mcp.json                    node ${CLAUDE_PLUGIN_ROOT}/dist/mcp.mjs
+hooks/hooks.json             UserPromptSubmit: node ${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs
+dist/mcp.mjs, dist/hook.mjs  bundles of src/, p-graph and the MCP SDK
 skills/dynamic-workflow/SKILL.md
 src/workflow.ts   graph rules: adding steps, applying reports, retry-or-ask, answers, recovery
-src/driver.ts     one pass: the concurrency pool and running a step
 src/prompt.ts     the step prompt and the report schema
-src/host.ts       workflow registry and tool handlers: re-reads, restarts passes
-src/extension.ts  SDK glue: joinSession, dw-drive, tools, hook
+src/host.ts       tool handlers: load, hand out steps, run checks, apply reports, save
+src/mcp.ts        the MCP server: tool schemas and descriptions
+src/hook.ts       the prompt hook
 src/store.ts, src/check.ts, src/parse.ts, src/text.ts, src/types.ts
 ```
+
+**Why not an extension.** Version 0.1 was a Copilot CLI extension: a background SDK workflow (`session.workflow`, `ctx.agent`) ran the steps, so the main agent only planned. Agents-app sessions run `copilot --acp`, which never loads extensions (tried on 1.0.88 and 1.0.95, with the `EXTENSIONS` feature flag, and with both plugin layouts). ACP does load plugin skills, MCP servers and hooks, which is all cognee-style plugins use. So 0.2 keeps the rules and checks in an MCP server and has the main agent launch the subagents. The trade-off: the main agent spends a short turn on every finished step, and the run lives as long as its session.
 
 ## 3. The graph
 
@@ -49,10 +53,10 @@ src/store.ts, src/check.ts, src/parse.ts, src/text.ts, src/types.ts
 interface NodeSpec {          // written by the planner (dw_plan, dw_add_task) or by a step's report
   title: string;
   instructions: string;       // self-contained: the step's agent sees little else
-  check?: string;             // shell command the driver runs from the project root; exit 0 means done
+  check?: string;             // shell command the server runs from the project root; exit 0 means done
 }
 
-interface NodeData extends NodeSpec {  // the rest is written only by the driver
+interface NodeData extends NodeSpec {  // the rest is written only by the server
   attempts: number;
   lastError?: string;         // why the previous attempt didn't count; shown to the next one
   result?: string;            // the summary of the done report; shown to dependent steps
@@ -79,11 +83,11 @@ A step's prompt shows the labels next to the results of the steps it waited for.
 
 Every workflow gets a node with the id `goal`. It depends on every other step. A step added later also becomes one of its prerequisites, as long as the goal step hasn't started.
 
-A step added while the goal step is running (for example by a tool call) can't become a prerequisite of a run already in progress. When the goal step finishes, the driver sees the unfinished steps, makes them prerequisites and runs the goal step again after them, so the goal is never declared done while work is left.
+A step added while the goal step is running (for example by a tool call) can't become a prerequisite of a run already in progress. When the goal step finishes, the server sees the unfinished steps, makes them prerequisites and runs the goal step again after them, so the goal is never declared done while work is left.
 
 Its agent checks the goal against the actual files, branches and command output instead of trusting the summaries. It also runs `goalCheck` if the planner gave one. If something is missing, it reports `blocked` with new steps; a `done` report that still lists new steps counts as `blocked`. Its priority is the lowest possible, so p-graph's priority inheritance never raises other steps through it.
 
-**Convergence.** The driver remembers the titles (normalised: case and whitespace) of the work the goal step last asked for. If the next goal report asks for the same work again, the new steps are not added; the goal step asks the user how to continue instead (§6). A report that asks for different work resets the comparison, so a goal step that finds new gaps each time still has no round limit.
+**Convergence.** The server remembers the titles (normalised: case and whitespace) of the work the goal step last asked for. If the next goal report asks for the same work again, the new steps are not added; the goal step asks the user how to continue instead (§6). A report that asks for different work resets the comparison, so a goal step that finds new gaps each time still has no round limit.
 
 ### Ids and priority
 
@@ -105,18 +109,18 @@ There are no numeric caps. The skill and the report instructions keep plans at s
 
 ### Checks
 
-`check` lets code, not the model, decide when a step is done. When a step reports `done`, the driver runs the check in a shell, in the step's directory:
+`check` lets code, not the model, decide when a step is done. When a step reports `done`, the server runs the check in a shell, from the project root:
 
 - Exit 0: the step completes.
 - Any other exit code: the attempt fails with the command's output (the last 12k characters), and the step runs again with that output in its prompt (see §4).
 
-The step's prompt shows the check and asks the agent to run it before reporting, so most failures get fixed within the attempt. The driver's run is the gate.
+The step's prompt shows the check and asks the agent to run it before reporting, so most failures get fixed within the attempt. The server's run is the gate.
 
 Checks run with `CI=true` in their environment, so test runners such as `node --test`, vitest and jest run once instead of starting watch mode. They run in their own process group, so cancelling a run kills everything a check started. If the step's directory doesn't exist, the check fails with a message that says so.
 
 ## 4. Reports
 
-Every step ends with a report. The schema passed to `ctx.agent` enforces its shape:
+Every step ends its final message with a report: one JSON object, usually in a ```` ```json ```` block. The step prompt shows its JSON Schema, and `parseOutcome` enforces it. It takes the whole message as JSON if it can, else its last json code block, else the text from the first `{` to the last `}`.
 
 ```ts
 {
@@ -127,7 +131,7 @@ Every step ends with a report. The schema passed to `ctx.agent` enforces its sha
 }
 ```
 
-| Report | What the driver does |
+| Report | What `dw_report` does |
 | --- | --- |
 | `done` | Runs the check. If it passes: adds `newTasks`, makes every step that waited for this one also wait for them (`found by <id>`), stores `summary` as the result and completes the step. If it fails: retry or ask (below). |
 | `blocked` with `newTasks` | Adds the new steps, puts the step back in the queue and makes it wait for them (`needed first`). |
@@ -141,26 +145,27 @@ Every step ends with a report. The schema passed to `ctx.agent` enforces its sha
 
 ## 5. Running
 
-**Host.** The extension keeps one `Host` for the session. It holds:
+**Stateless calls.** One MCP server serves every session of a CLI process, and it starts in the plugin directory with no MCP roots. So every tool takes `cwd`, the main agent's working directory, and the project is its git top level. Every call reads the workflow from disk, changes it, and writes it back before it returns. No session ever acts on an old copy, and any session can pick up any workflow. Calls for one project run one at a time.
 
-- the project's workflows, where the project is the git top level of the session directory;
-- at most one active run per workflow;
-- the tool handlers.
+**Handing out steps.** Every tool that changes a workflow (`dw_plan`, `dw_report`, `dw_answer`, `dw_add_task`, `dw_run`) ends by handing out ready steps, in priority order, until `concurrency` steps are in flight. A step in flight is in progress and not waiting for the user. Each hand-out counts an attempt and comes with the step's full prompt. The reply tells the main agent what to do next:
 
-**One rule for freshness.** A workflow that no pass of this session drives is read from disk before every use: every tool call and every prompt. Another session may have changed it, so a session never shows or acts on an old copy. A workflow this session drives is current in memory. Tool calls run one at a time, so a re-read never replaces a workflow that another call is changing. A pass stops counting as running in the same tick in which it ends, so a tool call never only wakes a pass that has already ended.
+- launch each handed-out step as a background `task` subagent, with its prompt as written;
+- the steps whose reports are still expected;
+- the open questions, with the instruction never to answer for the user;
+- or that the workflow is done, with every answer and check change.
 
-Nothing stops two live sessions from running the same workflow at the same time; don't. An earlier version had a per-workflow pid lock file for that. It took more code than the rest of the host, for a case nobody needed, so it was removed.
+`dw_next` gives the same reply without changing anything.
 
-Workflows never start on their own; `dw_run` resumes them. On the first prompt of a session, the extension tells the main agent which workflows of the project are paused with work left, so it can offer `dw_run`. It never resumes them itself.
+**Reports.** When a subagent finishes, the main agent passes its final message to `dw_report` with the step id and attempt number. The call:
 
-**Pass.** A pass is one run of the SDK workflow `dw-drive`. The tool handler starts it without waiting, with `notifyOnComplete` set so the main agent is notified when the pass ends. A pass:
+1. rejects a report for an attempt that is not in flight (an old attempt after `dw_run`, or a step that already reported);
+2. parses the report and, if it would complete the step, takes the step's check;
+3. runs the check outside the per-project queue, so a slow check doesn't hold up other reports;
+4. re-reads the workflow, checks the attempt again, applies the report, and hands out the next steps.
 
-1. Puts steps that an interrupted run left in progress back in the queue. It skips steps waiting for the user. Their `lastError` says the previous attempt was interrupted and may have done part of the work.
-2. Keeps up to `concurrency` steps running. Each step is one `ctx.agent` call labelled `<id>#<attempt>`. Each attempt gets a new label, so the SDK never reuses an earlier result. A finished step frees its slot at once; there's no batch barrier.
-3. Looks for new ready steps when a tool adds or answers a step mid-pass, because the tool wakes it.
-4. Ends when nothing is running and nothing is ready. The result is `done`, `waiting` (with the open questions) or `stuck`.
+**Resuming.** Nothing runs without the main agent. If its session ends, steps stay in flight. `dw_run` requeues them with `lastError` saying the previous attempt was interrupted and may have done part of the work; the new attempt number makes any late report from the old subagent bounce. Workflows never resume on their own. On the first prompt of a session, the hook tells the main agent which workflows of the project have work left, so it can offer `dw_run`.
 
-A hard error such as cancellation stops new dispatches. The running steps settle, the pass ends, and `dw_run` recovers later. If work became runnable just as a pass ended, the host starts another pass.
+Two live sessions can drive the same workflow. They share the concurrency, but `dw_run` in one requeues the other's steps; the skill says not to use `dw_run` while subagents still run.
 
 **Step prompt.** Built fresh for each attempt, it contains:
 
@@ -176,18 +181,18 @@ A hard error such as cancellation stops new dispatches. The running steps settle
 
 ## 6. Questions
 
-A step asks the user when it reports `needs_user`, reports `failed`, or fails the same way twice. The question is stored on the step, which stays in progress and is marked as waiting. Other steps keep running, and the pass ends `waiting` once only waiting steps are left.
+A step asks the user when it reports `needs_user`, reports `failed`, or fails the same way twice. The question is stored on the step, which stays in progress and is marked as waiting. Other steps keep running.
 
-- The session shows a warning when a step asks.
-- On every user message, the `onUserPromptSubmitted` hook adds the open questions to the main agent's context.
+- The `dw_report` reply lists the question and tells the main agent to ask the user (with `ask_user` when it has it) and never to answer for them.
+- On every user message, the hook adds the open questions to the main agent's context.
 - The main agent passes the user's answer to `dw_answer`. The step then runs again with the question and answer in its prompt.
 - When the question comes from a wrong check, `dw_answer` can replace the step's check too. The old check's failure is dropped with it. The goal check can't be replaced.
 
 Visibility, not enforcement. The main agent can call `dw_answer` without asking the user; in the dogfood run (§11) it did. Rather than try to stop that, every answer and check change is:
 
-- logged to the session, where the user sees it directly, as a warning when the check changed;
+- flagged with ⚠ in the `dw_answer` reply when the check changed, which tells the main agent to tell the user;
 - kept in the step's `history`;
-- listed in `dw_status` and in the result of the pass that finishes the workflow.
+- listed in `dw_status` and in the reply that finishes the workflow.
 
 The goal check is the backstop: a weakened step check still has to get past it.
 
@@ -214,17 +219,19 @@ There's one file per workflow: `.copilot/workflows/<id>.json` in the project. Th
 
 ## 9. Tools
 
+Every tool also takes `cwd`.
+
 | Tool | Purpose |
 | --- | --- |
-| `dw_plan(goal, concurrency, tasks, goalCheck?)` | Create a workflow and start it in the background. Bad plans (duplicate ids, unknown dependencies, cycles) are rejected before anything is saved. |
-| `dw_status(workflowId?, wait?)` | Show steps, results, errors and questions; with no id, list all workflows. `wait: true` blocks until the run stops. |
-| `dw_answer(workflowId, nodeId, answer, check?)` | Give a waiting step the user's answer, optionally replacing its check (not the goal's); the step runs again. |
+| `dw_plan(goal, concurrency, tasks, goalCheck?)` | Create a workflow and hand out its first steps. Bad plans (duplicate ids, unknown dependencies, cycles) are rejected before anything is saved. |
+| `dw_report(workflowId, stepId, attempt, report)` | Apply a finished subagent's report: parse, run the check, apply, hand out the next steps. |
+| `dw_next(workflowId)` | What to do next, without changing anything. |
+| `dw_answer(workflowId, nodeId, answer, check?)` | Give a waiting step the user's answer, optionally replacing its check (not the goal's); the step is handed out again. |
 | `dw_add_task(workflowId, task, blocks?)` | Add a step. `blocks` lists steps that haven't started and must wait for it. |
-| `dw_run(workflowId, concurrency?)` | Resume a paused workflow, optionally with a new concurrency. |
+| `dw_run(workflowId, concurrency?)` | Requeue steps whose subagent is gone and hand them out again, optionally with a new concurrency. |
+| `dw_status(workflowId?)` | Show steps, results, errors and questions; with no id, list the project's workflows. |
 
-- All tools are always loaded (`defer: "never"`).
-- `dw_status` and `dw_answer` skip the permission prompt.
-- Errors go back to the model as failed tool results that say what to fix.
+- Errors go back to the model as MCP tool errors that say what to fix.
 - There is no tool to remove a step, remove a dependency or complete a step, because each of those could silently drop work.
 
 ## 10. What code enforces, and what it trusts
@@ -233,7 +240,7 @@ The concern: could the AI change the graph to cut corners and skip work?
 
 Code enforces:
 
-- A step completes only through its own `done` report and a passing check.
+- A step completes only through a `done` report for its current attempt and a passing check, run by the server.
 - The goal check command can't be changed after planning.
 - The workflow is done only when every node is complete, including the goal step.
 - A report can only add work: new steps, and new waits for its own step or for the steps that waited for it. It can't remove, complete or edit other steps.
@@ -241,6 +248,7 @@ Code enforces:
 
 Code trusts the model for the following. The goal step re-checks the result.
 
+- Running each step as its own subagent and passing its report on unchanged. The main agent could write a report itself; the check still runs, and the skill and every reply forbid it.
 - The plan. The main agent writes the steps and their checks, and a weak check is a weak gate.
 - Not weakening tests or checks. The step prompt forbids it.
 - Not editing `.copilot/workflows/` or calling `dw_*` tools from a step. The prompt forbids it, but nothing technically prevents it. An edit made during a run is overwritten by the next write.
@@ -248,7 +256,7 @@ Code trusts the model for the following. The goal step re-checks the result.
 
 ## 11. Tried it
 
-**Unit tests.** 27 tests use `node --test` with a fake agent and fake checks. They cover:
+**Unit tests.** 24 tests use `node --test` with a fake agent and fake checks. A helper plays the main agent: it reads the hand-outs from the reply text, runs the fake agent, and calls `dw_report`. They cover:
 
 - the concurrency pool and dependency order;
 - a failing check retried with its output, and the same failure twice turning into a question;
@@ -256,10 +264,13 @@ Code trusts the model for the following. The goal step re-checks the result.
 - the goal step asking for the same work twice, and steps added while it runs;
 - a report that would create a cycle being rejected without changes;
 - crash recovery from the saved file;
-- bad plans, added-step ids, steps added mid-pass, and the check runner with `CI=true`;
-- answers that replace a check (and the goal check refusing), a second session that must not act on an old copy, answers given at the same time, unreadable workflow files, and the paused-workflow hint.
+- bad plans, added-step ids, steps added while the goal runs, and the check runner with `CI=true`;
+- answers that replace a check (and the goal check refusing);
+- hand-outs up to the concurrency, reports rejected for an old attempt, reports without JSON, a slow check not blocking other calls, and `cwd` handling.
 
-**Real runs.** The first four used Copilot CLI 1.0.93 with `--plugin-dir`, non-interactive (`-p`).
+**Agents-app mode (0.2).** Copilot CLI 1.0.95 in `--acp` mode, as the Agents app runs it, with `--plugin-dir`. Two steps at concurrency 2, one with a wrong check (`grep -q WORLD` for a lowercase file). The MCP tools and the skill loaded. The main agent launched both steps as background subagents and reported each final message. `hello` passed its check. The `world` subagent saw the contradiction and reported `needs_user`, and the main agent put the question to the user without answering it. The user said to change the check; `dw_answer` replaced it with the ⚠ flag, attempt 2 passed, the goal step passed, and the main agent told the user about the check change. It took about 1 minute of run time.
+
+**Real runs with 0.1 (the extension).** The first four used Copilot CLI 1.0.93 with `--plugin-dir`, non-interactive (`-p`).
 
 | Trial | What happened |
 | --- | --- |
@@ -292,13 +303,14 @@ What the runs taught:
 
 Limitations:
 
-- Nothing stops two live sessions from running the same workflow at once.
+- The main agent drives the run: a short turn per finished step, and the run stops when its session ends (`dw_run` resumes).
+- Two live sessions can drive one workflow; `dw_run` in one requeues the other's steps.
+- The main agent could write a step's report itself instead of running a subagent. The check and goal step still apply.
 - The main agent can answer a step's question, or replace its check, without asking the user. The user sees every change, but nothing prevents it.
 - Step subagents' permission requests reach the session like the main agent's own, one per shell command.
-- Agents-app sessions (ACP) can't use the plugin: they don't load extensions, and the app pins CLI 1.0.88, whose SDK has no `session.workflow`. It works in the CLI, interactive or `-p`, and in SDK sessions that request extensions.
 - Checks have no timeout.
 - A goal step that keeps finding different work has no round limit; only a repeated request asks the user.
-- Workflows don't resume on their own in a new session; the first prompt only mentions them.
+- Workflows don't resume on their own in a new session; the hook only mentions them.
 - Steps run at least once: an interrupted step runs again, so instructions should be safe to repeat.
 
 Changes from the v2 design:

@@ -1,6 +1,6 @@
 {
   "name": "custom-dynamic-workflows",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Copilot CLI plugin that turns a task into a graph of steps (p-graph) and runs every step to completion.",
@@ -8,15 +8,15 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "build": "esbuild src/extension.ts --bundle --platform=node --format=esm --target=node22 --external:@github/copilot-sdk --outfile=extensions/dynamic-workflows/extension.mjs",
+    "build": "esbuild src/mcp.ts src/hook.ts --bundle --platform=node --format=esm --target=node22 --outdir=dist --out-extension:.js=.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/**/*.test.ts\""
   },
   "dependencies": {
-    "@altinokdarici/p-graph": "github:altinokdarici/p-graph"
+    "@altinokdarici/p-graph": "github:altinokdarici/p-graph",
+    "@modelcontextprotocol/sdk": "^1.32.1"
   },
   "devDependencies": {
-    "@github/copilot-sdk": "^1.0.17",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2"

@@ -1,11 +1,13 @@
 ---
 name: dynamic-workflow
-description: Run a multi-step task as a dynamic workflow - a dependency graph of steps that runs in the background, in parallel where safe, with code-run checks, until every step and a final goal check are done. Use when the user asks for work that splits into several stage-sized steps (migrating many items, a change across several packages, one branch or PR per item), or says "run this as a workflow".
+description: Run a multi-step task as a dynamic workflow - a dependency graph of steps, each run by its own subagent, in parallel where safe, with code-run checks, until every step and a final goal check are done. Use when the user asks for work that splits into several stage-sized steps (migrating many items, a change across several packages, one branch or PR per item), or says "run this as a workflow".
 ---
 
 # Dynamic workflows
 
-The `dw_*` tools run a task as a graph of steps. Each step runs as its own agent. Steps can add follow-up steps while they run. When a step reports done, the driver runs that step's `check` command. If the check fails, the step is retried with the check's output. If a step fails the same way twice, the workflow asks the user. A final `goal` step verifies the whole goal and adds steps for anything that's missing.
+The `dw_*` tools (from the dynamic-workflows MCP server) keep a task as a graph of steps. You run the steps: the tools tell you which steps to launch, you run each one as a subagent, and you hand each subagent's report back. The tools own the rules. When a step reports done, they run its `check` command in code. If the check fails, the step goes back with the check's output. If a step fails the same way twice, it asks the user. A final `goal` step verifies the whole goal and adds steps for anything that's missing. Steps can add follow-up steps.
+
+Every tool takes `cwd`: the absolute path of your current working directory.
 
 ## Planning: `dw_plan`
 
@@ -18,11 +20,19 @@ The `dw_*` tools run a task as a graph of steps. Each step runs as its own agent
 4. `concurrency`: decide how many steps can safely run at once. Steps that run together must not edit the same files or switch branches in the same checkout. For one branch per item, either create a git worktree per item (keep `.worktrees/` git-ignored) and say in the step's instructions to work there, or use concurrency 1.
 5. `goal`: state it as the user would verify it. Add a `goalCheck` command if one exists. It can't be changed later: it is the definition of done.
 
-## While it runs
+## Running the steps
 
-- `dw_plan` returns immediately and the workflow runs in the background. Tell the user it started, then end your turn. Don't do the steps yourself. You'll get a notification when the run finishes or needs the user.
-- `dw_status` shows the steps, results, errors and questions. `wait: true` blocks until the workflow stops running. Use it only when you must stay in this turn, for example in a non-interactive run.
-- When a step asks a question, put it to the user and pass their answer to `dw_answer`. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix. To replace a step's check, pass the new one as `check`. Every answer and check change is shown to the user and listed when the workflow finishes.
-- `dw_add_task` adds a step the user asks for. `dw_run` resumes a paused workflow, for example after a restart.
+Every `dw_*` reply ends with what to do next. Follow it until the workflow is done:
 
-Workflow state lives in `.copilot/workflows/<id>.json`, which is git-ignored. Don't edit it by hand.
+1. **Launch.** For each `### workflowId …, stepId …, attempt …` block, start a background `task` subagent (agent_type `general-purpose`, mode `background`) whose prompt is the text inside `<step-prompt>`, exactly as written. Launch all of them at once. Tell the user briefly which steps started.
+2. **Report.** When a subagent finishes, read its final message (`read_agent`) and call `dw_report` with `workflowId`, `stepId`, `attempt` and that message unchanged as `report`. If the subagent failed or was cancelled, report the error text instead. Then launch whatever the reply hands out.
+3. **Wait.** While subagents are still running and nothing new is handed out, end your turn; you are notified when one finishes.
+4. **Done.** When a reply says the workflow is done, tell the user, including any answers and check changes it lists.
+
+Rules:
+- Never do a step's work yourself, never edit a step's report, and never edit `.copilot/workflows/`. The checks only mean something if the step's own subagent did the work.
+- When a step asks a question, put it to the user (with `ask_user` if you have it) and pass their answer to `dw_answer`. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix. To replace a step's check, pass the new one as `check` and tell the user.
+- `dw_add_task` adds a step the user asks for. `dw_status` shows the steps, results, errors and questions.
+- A workflow is driven by the session whose subagents run its steps. If those subagents are gone (a new session, a restart), `dw_run` sends their steps out again with a new attempt number; reports from old attempts are rejected. Never call `dw_run` while your own subagents are still running steps of that workflow.
+
+Workflow state lives in `.copilot/workflows/<id>.json`, which is git-ignored.

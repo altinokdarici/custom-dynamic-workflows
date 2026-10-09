@@ -1,7 +1,7 @@
 {
   "name": "custom-dynamic-workflows",
   "description": "Turns a task you describe in plain language into a graph of steps and runs every step to completion: parallel where it can, checked by code, asking you only when it is stuck.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Altinok Darici"
   },
@@ -13,6 +13,5 @@
     "task-decomposition",
     "copilot-cli"
   ],
-  "extensions": "extensions/",
   "skills": "skills/"
 }

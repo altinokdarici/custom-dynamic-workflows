@@ -4,11 +4,11 @@ import type { GraphSnapshot } from "@altinokdarici/p-graph";
 export interface NodeSpec {
   title: string;
   instructions: string;
-  /** Shell command run by the driver (not the agent) after the step reports done. */
+  /** Shell command run by the workflow server (not the agent) after the step reports done. */
   check?: string;
 }
 
-/** What the graph stores per node: the spec plus fields only the driver writes. */
+/** What the graph stores per node: the spec plus fields only the workflow server writes. */
 export interface NodeData extends NodeSpec {
   attempts: number;
   lastError?: string;
@@ -64,8 +64,3 @@ export type Question = {
   title: string;
   question: string;
 };
-
-export type PassResult =
-  | { status: "done"; workflowId: string; steps: number; answersAndCheckChanges: string[] }
-  | { status: "waiting"; workflowId: string; questions: Question[] }
-  | { status: "stuck"; workflowId: string; summary: string };

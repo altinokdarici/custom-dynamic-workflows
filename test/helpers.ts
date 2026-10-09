@@ -2,7 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
-import type { CheckResult } from "../src/types.ts";
+import { Host, type CheckFn } from "../src/host.ts";
+import { loadWorkflowFiles } from "../src/store.ts";
+import type { CheckResult, Question } from "../src/types.ts";
+import { Workflow } from "../src/workflow.ts";
 
 export async function tempRoot(t: TestContext): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "dw-test-"));
@@ -58,4 +61,54 @@ export function fakeCheck(results: Record<string, CheckResult[]> = {}) {
 
 export function task(id: string, extra: Record<string, unknown> = {}) {
   return { id, title: `Step ${id}`, instructions: `Do ${id}.`, ...extra };
+}
+
+/** One step the host handed out, parsed from its text the way the main agent reads it. */
+export function launches(text: string): { workflowId: string; stepId: string; attempt: number; prompt: string }[] {
+  const re = /### workflowId "([^"]+)", stepId "([^"]+)", attempt (\d+)\n<step-prompt>\n([\s\S]*?)\n<\/step-prompt>/g;
+  return [...text.matchAll(re)].map((m) => ({ workflowId: m[1]!, stepId: m[2]!, attempt: Number(m[3]), prompt: m[4]! }));
+}
+
+export interface Simulated {
+  status: "done" | "waiting" | "stuck";
+  /** The workflow as saved after the run. */
+  wf: Workflow;
+  questions: Question[];
+  answersAndCheckChanges: string[];
+  /** The host's last reply. */
+  text: string;
+}
+
+/**
+ * Plays the main agent: resumes the workflow with dw_run, runs every launched
+ * step with `agent` concurrently, reports each result with dw_report, and
+ * launches what the replies hand out, until nothing is running.
+ */
+export async function runPass(
+  wf: Workflow,
+  options: { agent: (prompt: string, label: string) => Promise<unknown>; check: CheckFn; host?: Host },
+): Promise<Simulated> {
+  await wf.flush();
+  const host = options.host ?? new Host({ check: options.check });
+  const cwd = wf.root;
+  let text = await host.run({ cwd, workflowId: wf.id });
+  const running = new Set<Promise<void>>();
+  const start = (reply: string) => {
+    text = reply;
+    for (const l of launches(reply)) {
+      const p: Promise<void> = options
+        .agent(l.prompt, `${l.stepId}#${l.attempt}`)
+        .then((report) => host.report({ cwd, workflowId: l.workflowId, stepId: l.stepId, attempt: l.attempt, report }))
+        .then(start)
+        .finally(() => running.delete(p));
+      running.add(p);
+    }
+  };
+  start(text);
+  while (running.size) await Promise.race(running);
+  const [file] = (await loadWorkflowFiles(cwd, () => {})).filter((f) => f.doc.id === wf.id);
+  const saved = Workflow.load(cwd, file!.path, file!.doc);
+  const questions = saved.questions();
+  const status = saved.graph.isComplete ? "done" : questions.length ? "waiting" : "stuck";
+  return { status, wf: saved, questions, answersAndCheckChanges: saved.changes(), text };
 }
