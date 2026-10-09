@@ -22758,6 +22758,81 @@ Steps marked "running now" run at the same time as this one; do not change files
   return parts.join("\n\n");
 }
 
+// src/view.ts
+var LEGEND = [
+  ["done", "done"],
+  ["running", "running"],
+  ["retrying", "running again"],
+  ["asking", "needs you"],
+  ["ready", "ready"],
+  ["waiting", "waiting on steps"]
+];
+var COLORS = {
+  done: "#2e7d32",
+  running: "#1565c0",
+  retrying: "#ef6c00",
+  asking: "#c62828",
+  ready: "#6a1b9a",
+  waiting: "#616161"
+};
+function viewHtml(wf, state) {
+  const nodes = [...wf.graph.nodes()];
+  const key = new Map(nodes.map((n, i) => [n.id, `n${i}`]));
+  const lines = ["flowchart TD"];
+  for (const [status, color] of Object.entries(COLORS)) {
+    lines.push(`  classDef ${status} fill:${color},stroke:${color},color:#fff`);
+  }
+  for (const node of nodes) {
+    const d = node.data;
+    const status = statusOf(wf, node);
+    const extra = [d.attempts > 1 ? `attempt ${d.attempts}` : "", d.check ? "\u2713 checked" : ""].filter(Boolean).join(" \xB7 ");
+    const label = [`<b>${label_(node.id)}</b>`, label_(clip2(d.title, 48)), extra].filter(Boolean).join("<br/>");
+    lines.push(`  ${key.get(node.id)}["${label}"]:::${status}`);
+  }
+  for (const node of nodes) {
+    for (const edge of wf.graph.dependencyEdges(node.id)) {
+      if (node.id === GOAL && wf.graph.dependentEdges(edge.dependsOn).length > 1) continue;
+      const text2 = edge.data?.label ? `|"${label_(clip2(edge.data.label, 30))}"|` : "";
+      lines.push(`  ${key.get(edge.dependsOn)} -->${text2} ${key.get(node.id)}`);
+    }
+  }
+  const questions = wf.questions().map((q) => `<li><b>${esc2(q.nodeId)}</b>: ${esc2(q.question)}</li>`);
+  const errors = nodes.filter((n) => n.state !== "completed" && n.data.lastError && !wf.isWaiting(n)).map((n) => `<li><b>${esc2(n.id)}</b>: ${esc2(clip2(n.data.lastError ?? "", 300))}</li>`);
+  const legend = LEGEND.map(([s, text2]) => `<span><i style="background:${COLORS[s]}"></i>${text2}</span>`).join("");
+  const done = wf.graph.count("completed");
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+body{font:14px system-ui,sans-serif;margin:12px;color:CanvasText;background:transparent}
+:root[data-theme=dark]{color-scheme:dark}:root[data-theme=light]{color-scheme:light}
+h3{margin:0 0 4px}p{margin:0 0 8px;opacity:.8}.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;margin-bottom:8px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}ul{padding-left:18px}
+</style></head><body>
+<h3>${esc2(wf.goal)}</h3>
+<p>${esc2(wf.id)} \xB7 ${done}/${wf.graph.size} steps done \xB7 ${esc2(state)}</p>
+<div class="legend">${legend}</div>
+<pre class="mermaid">${esc2(lines.join("\n"))}</pre>
+${questions.length ? `<h4>Needs you</h4><ul>${questions.join("")}</ul>` : ""}
+${errors.length ? `<h4>Last errors</h4><ul>${errors.join("")}</ul>` : ""}
+<script src="/canvas-lib/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,securityLevel:"loose",theme:document.documentElement.dataset.theme==="dark"?"dark":"default"});</script>
+</body></html>`;
+}
+function statusOf(wf, node) {
+  if (node.state === "completed") return "done";
+  if (wf.isWaiting(node)) return "asking";
+  if (node.state === "in-progress") return node.data.attempts > 1 ? "retrying" : "running";
+  if (node.state === "ready") return "ready";
+  return "waiting";
+}
+function esc2(text2) {
+  return text2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function label_(text2) {
+  return text2.replace(/"/g, "#quot;").replace(/[<>]/g, "").replace(/\s+/g, " ");
+}
+function clip2(text2, max) {
+  return text2.length <= max ? text2 : `${text2.slice(0, max - 1)}\u2026`;
+}
+
 // src/host.ts
 var LAUNCH = `Launch each step below now as its own background \`task\` subagent (agent_type "general-purpose"), passing the text inside <step-prompt> exactly as written. Do not do the steps yourself. When a subagent finishes, call dw_report with the workflowId, its stepId and attempt, and the subagent's final message.`;
 var ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to dw_answer. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
@@ -22868,6 +22943,15 @@ ${wf.statusText()}`;
       const all = await loadAll(root);
       if (!all.length) return `No workflows in ${root}.`;
       return all.map((wf) => `- ${wf.id}: ${stateOf(wf)}. ${wf.goal}`).join("\n");
+    });
+  }
+  async view(rawArgs) {
+    const { root, id } = target(rawArgs);
+    return this.#serial(root, async () => {
+      const wf = await load(root, id);
+      const html = viewHtml(wf, stateOf(wf));
+      return `Show this with canvas_show: name "workflow-${wf.id}", title ${JSON.stringify(clip3(wf.goal, 80))}, kind "html", content:
+${html}`;
     });
   }
   /** Hands out ready steps up to the concurrency, saves, and says what the main agent does next. */
@@ -22981,7 +23065,7 @@ function describe3(wf, id, applied, check2) {
       return "needs the user.";
     case "retry":
       return `not accepted; it runs again.
-${clip2(wf.node(id).data.lastError ?? "", 1500)}`;
+${clip3(wf.node(id).data.lastError ?? "", 1500)}`;
   }
 }
 function target(rawArgs) {
@@ -22993,7 +23077,7 @@ function rootOf(raw) {
   if (!isAbsolute(cwd)) throw new InputError("cwd must be the absolute path of your current working directory.");
   return projectRoot(cwd);
 }
-function clip2(text2, max) {
+function clip3(text2, max) {
   return text2.length <= max ? text2 : `${text2.slice(0, max)}\u2026`;
 }
 function projectRoot(cwd) {
@@ -23143,9 +23227,19 @@ var tools = [
       properties: { cwd: CWD, workflowId: WORKFLOW_ID }
     },
     handler: (args) => host.status(args)
+  },
+  {
+    name: "dw_view",
+    description: `Get a workflow's step graph, colored by status, as an HTML page for a canvas. If you have a canvas_show tool, pass the page to it unchanged as kind "html" with the name and title given.`,
+    inputSchema: {
+      type: "object",
+      required: ["cwd", "workflowId"],
+      properties: { cwd: CWD, workflowId: WORKFLOW_ID }
+    },
+    handler: (args) => host.view(args)
   }
 ];
-var server = new Server({ name: "dynamic-workflows", version: "0.2.0" }, { capabilities: { tools: {} } });
+var server = new Server({ name: "dynamic-workflows", version: "0.3.0" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))
 }));

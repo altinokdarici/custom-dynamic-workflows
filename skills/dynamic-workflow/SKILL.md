@@ -26,8 +26,9 @@ Every `dw_*` reply ends with what to do next. Follow it until the workflow is do
 
 1. **Launch.** For each `### workflowId …, stepId …, attempt …` block, start a background `task` subagent (agent_type `general-purpose`, mode `background`) whose prompt is the text inside `<step-prompt>`, exactly as written. Launch all of them at once. Tell the user briefly which steps started.
 2. **Report.** When a subagent finishes, read its final message (`read_agent`) and call `dw_report` with `workflowId`, `stepId`, `attempt` and that message unchanged as `report`. If the subagent failed or was cancelled, report the error text instead. Then launch whatever the reply hands out.
-3. **Wait.** While subagents are still running and nothing new is handed out, end your turn; you are notified when one finishes.
-4. **Done.** When a reply says the workflow is done, tell the user, including any answers and check changes it lists.
+3. **Show progress.** If you have a `canvas_show` tool, call `dw_view` after `dw_plan` and after every `dw_report`, `dw_answer`, `dw_add_task` and `dw_run`, and pass the page it returns to `canvas_show` unchanged. The same canvas name updates the panel in place. Skip this when you have no `canvas_show`.
+4. **Wait.** While subagents are still running and nothing new is handed out, end your turn; you are notified when one finishes.
+5. **Done.** When a reply says the workflow is done, tell the user, including any answers and check changes it lists.
 
 Rules:
 - Never do a step's work yourself, never edit a step's report, and never edit `.copilot/workflows/`. The checks only mean something if the step's own subagent did the work.

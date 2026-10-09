@@ -5,6 +5,7 @@ import { InputError, optionalText, parseOutcome, parseTask, parseTasks, record, 
 import { buildPrompt } from "./prompt.ts";
 import { loadWorkflowFiles } from "./store.ts";
 import type { CheckResult, Outcome, Question } from "./types.ts";
+import { viewHtml } from "./view.ts";
 import { Workflow, type Applied } from "./workflow.ts";
 
 export type CheckFn = (command: string, root: string) => Promise<CheckResult>;
@@ -139,6 +140,15 @@ export class Host {
       const all = await loadAll(root);
       if (!all.length) return `No workflows in ${root}.`;
       return all.map((wf) => `- ${wf.id}: ${stateOf(wf)}. ${wf.goal}`).join("\n");
+    });
+  }
+
+  async view(rawArgs: unknown): Promise<string> {
+    const { root, id } = target(rawArgs);
+    return this.#serial(root, async () => {
+      const wf = await load(root, id);
+      const html = viewHtml(wf, stateOf(wf));
+      return `Show this with canvas_show: name "workflow-${wf.id}", title ${JSON.stringify(clip(wf.goal, 80))}, kind "html", content:\n${html}`;
     });
   }
 

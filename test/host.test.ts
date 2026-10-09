@@ -120,3 +120,22 @@ test("a slow check doesn't hold up other calls", async (t) => {
   release();
   assert.match(await reportA, /done, and its check passed/);
 });
+
+test("dw_view renders the graph colored by status, with questions, for a canvas", async (t) => {
+  const { cwd, host, workflowId } = await planned(t);
+  await host.report({ cwd, workflowId, stepId: "a", attempt: 1, report: done("did a") });
+  const ask = `\`\`\`json\n${JSON.stringify({ status: "needs_user", summary: "stuck", question: 'Use "x" <or> y?' })}\n\`\`\``;
+  await host.report({ cwd, workflowId, stepId: "b", attempt: 1, report: ask });
+
+  const view = await host.view({ cwd, workflowId });
+  assert.match(view, new RegExp(`^Show this with canvas_show: name "workflow-${workflowId}", title "Two things", kind "html"`));
+  const html = view.slice(view.indexOf("<!doctype html>"));
+  assert.match(html, /<script src="\/canvas-lib\/mermaid\.min\.js"><\/script>/);
+  const mermaid = /<pre class="mermaid">([\s\S]*?)<\/pre>/.exec(html)![1]!;
+  assert.match(mermaid, /n0\[&quot;&lt;b&gt;a&lt;\/b&gt;.*\]:::done/);
+  assert.match(mermaid, /n1\[.*\]:::asking/);
+  assert.match(mermaid, /n2\[.*\]:::running/);
+  assert.match(mermaid, /n0 --&gt; n2/);
+  assert.match(html, /<li><b>b<\/b>: Use &quot;x&quot; &lt;or&gt; y\?<\/li>/);
+  assert.match(html, /1\/4 steps done/);
+});

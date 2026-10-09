@@ -146,9 +146,20 @@ const tools: { name: string; description: string; inputSchema: Record<string, un
     },
     handler: (args) => host.status(args),
   },
+  {
+    name: "dw_view",
+    description:
+      "Get a workflow's step graph, colored by status, as an HTML page for a canvas. If you have a canvas_show tool, pass the page to it unchanged as kind \"html\" with the name and title given.",
+    inputSchema: {
+      type: "object",
+      required: ["cwd", "workflowId"],
+      properties: { cwd: CWD, workflowId: WORKFLOW_ID },
+    },
+    handler: (args) => host.view(args),
+  },
 ];
 
-const server = new Server({ name: "dynamic-workflows", version: "0.2.0" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "dynamic-workflows", version: "0.3.0" }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),

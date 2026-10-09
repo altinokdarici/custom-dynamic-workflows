@@ -230,6 +230,7 @@ Every tool also takes `cwd`.
 | `dw_add_task(workflowId, task, blocks?)` | Add a step. `blocks` lists steps that haven't started and must wait for it. |
 | `dw_run(workflowId, concurrency?)` | Requeue steps whose subagent is gone and hand them out again, optionally with a new concurrency. |
 | `dw_status(workflowId?)` | Show steps, results, errors and questions; with no id, list the project's workflows. |
+| `dw_view(workflowId)` | A self-contained HTML page (Mermaid graph colored by status, open questions, last errors) for an Agents canvas. The skill passes it to `canvas_show` after each tool call that changes the graph, so the side panel stays live. It costs about 1k tokens per update. |
 
 - Errors go back to the model as MCP tool errors that say what to fix.
 - There is no tool to remove a step, remove a dependency or complete a step, because each of those could silently drop work.
