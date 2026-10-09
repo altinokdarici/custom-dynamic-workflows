@@ -1,6 +1,6 @@
 {
   "name": "custom-dynamic-workflows",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Copilot CLI plugin that turns a task into a graph of steps (p-graph) and runs every step to completion.",

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { isAbsolute } from "node:path";
+import { INBOX_ENV, publishCanvas } from "./canvas.ts";
 import { runCheck } from "./check.ts";
 import { InputError, optionalText, parseOutcome, parseTask, parseTasks, record, text } from "./parse.ts";
 import { buildPrompt } from "./prompt.ts";
@@ -13,6 +14,8 @@ export type CheckFn = (command: string, root: string) => Promise<CheckResult>;
 export interface HostOptions {
   /** Runs a step's check from the project root. Defaults to runCheck. */
   check?: CheckFn;
+  /** Environment that says where to show the workflow canvas. Defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** A step handed out to the main agent to run as a subagent. */
@@ -33,10 +36,12 @@ const ASK = `Ask the user each question (with the ask_user tool if you have it) 
  */
 export class Host {
   readonly #check: CheckFn;
+  readonly #env: NodeJS.ProcessEnv;
   readonly #queues = new Map<string, Promise<unknown>>();
 
   constructor(options: HostOptions = {}) {
     this.#check = options.check ?? runCheck;
+    this.#env = options.env ?? process.env;
   }
 
   async plan(rawArgs: unknown): Promise<string> {
@@ -50,7 +55,8 @@ export class Host {
     };
     return this.#serial(root, async () => {
       const wf = Workflow.create(root, input);
-      return `Created workflow ${wf.id}.\n\n${await this.#advance(wf)}`;
+      const shown = this.#env[INBOX_ENV] ? " Its step graph shows in the user's side panel and updates by itself." : "";
+      return `Created workflow ${wf.id}.${shown}\n\n${await this.#advance(wf)}`;
     });
   }
 
@@ -167,6 +173,7 @@ export class Host {
       prompt: buildPrompt(wf, stepId),
     }));
     await wf.flush();
+    await publishCanvas(wf, stateOf(wf), this.#env);
     return nextText(wf, launches);
   }
 

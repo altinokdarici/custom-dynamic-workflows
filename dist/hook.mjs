@@ -7,21 +7,6 @@ import { join as join2 } from "node:path";
 // src/host.ts
 import { execFileSync } from "node:child_process";
 
-// src/text.ts
-function slug(text2, maxLength = 48) {
-  return text2.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, maxLength).replace(/^-+|-+$/g, "");
-}
-function normalizeError(text2) {
-  return text2.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
-}
-
-// src/check.ts
-var GROUP = process.platform !== "win32";
-
-// src/parse.ts
-var InputError = class extends Error {
-};
-
 // src/workflow.ts
 import { randomBytes } from "node:crypto";
 
@@ -881,6 +866,10 @@ function toEdge2(id, dependsOn, data) {
   return data === void 0 ? { id, dependsOn } : { id, dependsOn, data };
 }
 
+// src/parse.ts
+var InputError = class extends Error {
+};
+
 // src/store.ts
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -946,6 +935,14 @@ async function writeJsonAtomic(path, value) {
   await writeFile(tmp, `${JSON.stringify(value, null, 2)}
 `);
   await rename(tmp, path);
+}
+
+// src/text.ts
+function slug(text2, maxLength = 48) {
+  return text2.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, maxLength).replace(/^-+|-+$/g, "");
+}
+function normalizeError(text2) {
+  return text2.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
 }
 
 // src/workflow.ts
@@ -1292,6 +1289,9 @@ function clip(text2, max = 300) {
   const flat = text2.replace(/\s+/g, " ").trim();
   return flat.length <= max ? flat : `${flat.slice(0, max)}\u2026`;
 }
+
+// src/check.ts
+var GROUP = process.platform !== "win32";
 
 // src/prompt.ts
 var OUTCOME_SCHEMA = {

@@ -51,7 +51,7 @@ Questions come back in the `dw_report` reply, and the hook repeats open ones on 
 | `dw_add_task` | Add a step. `blocks` makes steps that haven't started wait for it. |
 | `dw_run` | Requeue steps whose subagent is gone (a new session, a restart) and hand them out again. Can change concurrency. |
 | `dw_status` | Show steps, results, errors and questions, or list the repo's workflows. |
-| `dw_view` | Return the step graph, colored by status, as an HTML page. In Agents sessions the skill shows it with `canvas_show` and refreshes it after every step. |
+| `dw_view` | Return the step graph, colored by status, as an HTML page. In Agents sessions the server shows it in the side panel by itself after every change (through the host's canvas inbox, `AGENTS_CANVAS_INBOX`); `dw_view` is the fallback for older hosts. |
 
 Every tool takes `cwd`, the main agent's working directory, because one MCP server serves every session of the CLI process; workflows belong to its git repository.
 

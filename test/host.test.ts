@@ -7,7 +7,7 @@ const done = (summary: string) => `Finished.\n\`\`\`json\n${JSON.stringify({ sta
 
 async function planned(t: Parameters<typeof tempRoot>[0], check = fakeCheck().check) {
   const cwd = await tempRoot(t);
-  const host = new Host({ check });
+  const host = new Host({ check, env: {} });
   const text = await host.plan({
     cwd,
     goal: "Two things",
@@ -57,7 +57,7 @@ test("a stale attempt's report is ignored after dw_run requeues the step", async
 test("checks gate completion and a report without JSON is retried", async (t) => {
   const checks = fakeCheck({ "npm test": [{ ok: false, output: "1 failing" }, { ok: true, output: "" }] });
   const cwd = await tempRoot(t);
-  const host = new Host({ check: checks.check });
+  const host = new Host({ check: checks.check, env: {} });
   const text = await host.plan({ cwd, goal: "G", concurrency: 1, tasks: [task("a", { check: "npm test" })] });
   const workflowId = launches(text)[0]!.workflowId;
 
@@ -111,7 +111,7 @@ test("a slow check doesn't hold up other calls", async (t) => {
     return { ok: true, output: "" };
   };
   const cwd = await tempRoot(t);
-  const host = new Host({ check: slow });
+  const host = new Host({ check: slow, env: {} });
   const text = await host.plan({ cwd, goal: "G", concurrency: 2, tasks: [task("a", { check: "slow" }), task("b")] });
   const workflowId = launches(text)[0]!.workflowId;
 
@@ -138,4 +138,26 @@ test("dw_view renders the graph colored by status, with questions, for a canvas"
   assert.match(mermaid, /n0 --&gt; n2/);
   assert.match(html, /<li><b>b<\/b>: Use &quot;x&quot; &lt;or&gt; y\?<\/li>/);
   assert.match(html, /1\/4 steps done/);
+});
+
+test("in an Agents session every state change drops the step graph into the canvas inbox", async (t) => {
+  const { mkdtemp, readdir, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const inbox = await mkdtemp(join(tmpdir(), "dw-inbox-"));
+  t.after(() => rm(inbox, { recursive: true, force: true }));
+  const cwd = await tempRoot(t);
+  const host = new Host({ check: fakeCheck().check, env: { AGENTS_CANVAS_INBOX: inbox, COPILOT_AGENT_SESSION_ID: "s1" } });
+  const text = await host.plan({ cwd, goal: "Ship it", concurrency: 1, tasks: [task("a")] });
+  const workflowId = /Created workflow (\S+)\./.exec(text)![1]!;
+  await host.report({ cwd, workflowId, stepId: "a", attempt: 1, report: done("ok") });
+  const files = (await readdir(inbox)).sort();
+  assert.equal(files.length, 2);
+  assert.ok(files.every((f) => f.endsWith(".json")));
+  const last = JSON.parse(await readFile(join(inbox, files[1]!), "utf8"));
+  assert.equal(last.sessionId, "s1");
+  assert.equal(last.name, `workflow-${workflowId}`);
+  assert.equal(last.kind, "html");
+  assert.equal(last.title, "Ship it");
+  assert.match(last.content, /flowchart TD/);
 });

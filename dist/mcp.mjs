@@ -21259,148 +21259,9 @@ var StdioServerTransport = class {
 import { execFileSync } from "node:child_process";
 import { isAbsolute } from "node:path";
 
-// src/check.ts
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-
-// src/text.ts
-function slug(text2, maxLength = 48) {
-  return text2.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, maxLength).replace(/^-+|-+$/g, "");
-}
-function normalizeError(text2) {
-  return text2.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
-}
-function tail(text2, maxChars) {
-  return text2.length <= maxChars ? text2 : `\u2026${text2.slice(text2.length - maxChars)}`;
-}
-function indent(text2, prefix = "  ") {
-  return text2.split("\n").map((line) => prefix + line).join("\n");
-}
-
-// src/check.ts
-var OUTPUT_TAIL = 12e3;
-var GROUP = process.platform !== "win32";
-function runCheck(command, cwd, signal) {
-  if (!existsSync(cwd)) {
-    return Promise.resolve({ ok: false, output: `The check directory does not exist: ${cwd}` });
-  }
-  return new Promise((resolve, reject) => {
-    signal?.throwIfAborted();
-    let output = "";
-    const child = spawn(command, { cwd, shell: true, env: { ...process.env, CI: "true" }, detached: GROUP, stdio: ["ignore", "pipe", "pipe"] });
-    const kill = () => {
-      try {
-        if (GROUP && child.pid) process.kill(-child.pid, "SIGTERM");
-        else child.kill();
-      } catch {
-      }
-    };
-    signal?.addEventListener("abort", kill, { once: true });
-    const collect = (chunk) => {
-      output = tail(output + chunk.toString(), OUTPUT_TAIL);
-    };
-    child.stdout.on("data", collect);
-    child.stderr.on("data", collect);
-    child.on("error", (error2) => {
-      signal?.removeEventListener("abort", kill);
-      resolve({ ok: false, output: `Could not run the check: ${error2.message}` });
-    });
-    child.on("close", (code, killedBy) => {
-      signal?.removeEventListener("abort", kill);
-      if (signal?.aborted) return reject(signal.reason);
-      const status = code === 0 ? "" : `
-(exit ${code ?? killedBy})`;
-      resolve({ ok: code === 0, output: `$ ${command}
-${output.trimEnd()}${status}` });
-    });
-  });
-}
-
-// src/parse.ts
-var STATUSES = ["done", "blocked", "needs_user", "failed"];
-var InputError = class extends Error {
-};
-function parseTasks(raw, where = "tasks") {
-  if (!Array.isArray(raw)) throw new InputError(`${where} must be an array.`);
-  return raw.map((item, i) => parseTask(item, `${where}[${i}]`));
-}
-function parseTask(raw, where = "task") {
-  const o = record2(raw, where);
-  const title = text(o.title, `${where}.title`);
-  const task = {
-    id: optionalText(o.id, `${where}.id`) ?? title,
-    title,
-    instructions: text(o.instructions, `${where}.instructions`)
-  };
-  const check2 = optionalText(o.check, `${where}.check`);
-  if (check2) task.check = check2;
-  if (o.priority !== void 0 && o.priority !== null) {
-    if (typeof o.priority !== "number" || !Number.isFinite(o.priority)) {
-      throw new InputError(`${where}.priority must be a number.`);
-    }
-    task.priority = o.priority;
-  }
-  if (o.dependsOn !== void 0 && o.dependsOn !== null) {
-    if (!Array.isArray(o.dependsOn)) throw new InputError(`${where}.dependsOn must be an array.`);
-    task.dependsOn = o.dependsOn.map((dep, i) => parseDep(dep, `${where}.dependsOn[${i}]`));
-  }
-  return task;
-}
-function parseDep(raw, where) {
-  if (typeof raw === "string") return text(raw, where);
-  const o = record2(raw, where);
-  const id = text(o.id, `${where}.id`);
-  const label = optionalText(o.label, `${where}.label`);
-  return label ? { id, label } : id;
-}
-function parseOutcome(raw) {
-  if (raw === null || raw === void 0) throw new InputError("The step ended without a report.");
-  if (typeof raw === "string") raw = extractJson(raw);
-  const o = record2(raw, "report");
-  if (!STATUSES.includes(o.status)) {
-    throw new InputError(`report.status must be one of: ${STATUSES.join(", ")}.`);
-  }
-  const outcome = {
-    status: o.status,
-    summary: typeof o.summary === "string" ? o.summary.trim() : ""
-  };
-  const question = optionalText(o.question, "report.question");
-  if (question) outcome.question = question;
-  if (o.newTasks !== void 0 && o.newTasks !== null) {
-    const tasks = parseTasks(o.newTasks, "report.newTasks");
-    if (tasks.length) outcome.newTasks = tasks;
-  }
-  return outcome;
-}
-function extractJson(message) {
-  const fenced = [...message.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((m) => m[1]);
-  const start = message.indexOf("{");
-  const end = message.lastIndexOf("}");
-  const candidates = [message, fenced.at(-1), start >= 0 && end > start ? message.slice(start, end + 1) : void 0];
-  for (const candidate of candidates) {
-    if (!candidate?.trim()) continue;
-    try {
-      return JSON.parse(candidate);
-    } catch {
-    }
-  }
-  throw new InputError("The step's final message had no JSON report.");
-}
-function record2(raw, where) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new InputError(`${where} must be an object.`);
-  }
-  return raw;
-}
-function text(raw, where) {
-  if (typeof raw !== "string" || !raw.trim()) throw new InputError(`${where} must be a non-empty string.`);
-  return raw.trim();
-}
-function optionalText(raw, where) {
-  if (raw === void 0 || raw === null) return void 0;
-  if (typeof raw !== "string") throw new InputError(`${where} must be a string.`);
-  return raw.trim() || void 0;
-}
+// src/canvas.ts
+import { mkdir as mkdir2, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
+import { join as join2 } from "node:path";
 
 // src/workflow.ts
 import { randomBytes } from "node:crypto";
@@ -22261,6 +22122,92 @@ function toEdge2(id, dependsOn, data) {
   return data === void 0 ? { id, dependsOn } : { id, dependsOn, data };
 }
 
+// src/parse.ts
+var STATUSES = ["done", "blocked", "needs_user", "failed"];
+var InputError = class extends Error {
+};
+function parseTasks(raw, where = "tasks") {
+  if (!Array.isArray(raw)) throw new InputError(`${where} must be an array.`);
+  return raw.map((item, i) => parseTask(item, `${where}[${i}]`));
+}
+function parseTask(raw, where = "task") {
+  const o = record2(raw, where);
+  const title = text(o.title, `${where}.title`);
+  const task = {
+    id: optionalText(o.id, `${where}.id`) ?? title,
+    title,
+    instructions: text(o.instructions, `${where}.instructions`)
+  };
+  const check2 = optionalText(o.check, `${where}.check`);
+  if (check2) task.check = check2;
+  if (o.priority !== void 0 && o.priority !== null) {
+    if (typeof o.priority !== "number" || !Number.isFinite(o.priority)) {
+      throw new InputError(`${where}.priority must be a number.`);
+    }
+    task.priority = o.priority;
+  }
+  if (o.dependsOn !== void 0 && o.dependsOn !== null) {
+    if (!Array.isArray(o.dependsOn)) throw new InputError(`${where}.dependsOn must be an array.`);
+    task.dependsOn = o.dependsOn.map((dep, i) => parseDep(dep, `${where}.dependsOn[${i}]`));
+  }
+  return task;
+}
+function parseDep(raw, where) {
+  if (typeof raw === "string") return text(raw, where);
+  const o = record2(raw, where);
+  const id = text(o.id, `${where}.id`);
+  const label = optionalText(o.label, `${where}.label`);
+  return label ? { id, label } : id;
+}
+function parseOutcome(raw) {
+  if (raw === null || raw === void 0) throw new InputError("The step ended without a report.");
+  if (typeof raw === "string") raw = extractJson(raw);
+  const o = record2(raw, "report");
+  if (!STATUSES.includes(o.status)) {
+    throw new InputError(`report.status must be one of: ${STATUSES.join(", ")}.`);
+  }
+  const outcome = {
+    status: o.status,
+    summary: typeof o.summary === "string" ? o.summary.trim() : ""
+  };
+  const question = optionalText(o.question, "report.question");
+  if (question) outcome.question = question;
+  if (o.newTasks !== void 0 && o.newTasks !== null) {
+    const tasks = parseTasks(o.newTasks, "report.newTasks");
+    if (tasks.length) outcome.newTasks = tasks;
+  }
+  return outcome;
+}
+function extractJson(message) {
+  const fenced = [...message.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((m) => m[1]);
+  const start = message.indexOf("{");
+  const end = message.lastIndexOf("}");
+  const candidates = [message, fenced.at(-1), start >= 0 && end > start ? message.slice(start, end + 1) : void 0];
+  for (const candidate of candidates) {
+    if (!candidate?.trim()) continue;
+    try {
+      return JSON.parse(candidate);
+    } catch {
+    }
+  }
+  throw new InputError("The step's final message had no JSON report.");
+}
+function record2(raw, where) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new InputError(`${where} must be an object.`);
+  }
+  return raw;
+}
+function text(raw, where) {
+  if (typeof raw !== "string" || !raw.trim()) throw new InputError(`${where} must be a non-empty string.`);
+  return raw.trim();
+}
+function optionalText(raw, where) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (typeof raw !== "string") throw new InputError(`${where} must be a string.`);
+  return raw.trim() || void 0;
+}
+
 // src/store.ts
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -22326,6 +22273,20 @@ async function writeJsonAtomic(path, value) {
   await writeFile(tmp, `${JSON.stringify(value, null, 2)}
 `);
   await rename(tmp, path);
+}
+
+// src/text.ts
+function slug(text2, maxLength = 48) {
+  return text2.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, maxLength).replace(/^-+|-+$/g, "");
+}
+function normalizeError(text2) {
+  return text2.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
+}
+function tail(text2, maxChars) {
+  return text2.length <= maxChars ? text2 : `\u2026${text2.slice(text2.length - maxChars)}`;
+}
+function indent(text2, prefix = "  ") {
+  return text2.split("\n").map((line) => prefix + line).join("\n");
 }
 
 // src/workflow.ts
@@ -22673,6 +22634,148 @@ function clip(text2, max = 300) {
   return flat.length <= max ? flat : `${flat.slice(0, max)}\u2026`;
 }
 
+// src/view.ts
+var LEGEND = [
+  ["done", "done"],
+  ["running", "running"],
+  ["retrying", "running again"],
+  ["asking", "needs you"],
+  ["ready", "ready"],
+  ["waiting", "waiting on steps"]
+];
+var COLORS = {
+  done: "#2e7d32",
+  running: "#1565c0",
+  retrying: "#ef6c00",
+  asking: "#c62828",
+  ready: "#6a1b9a",
+  waiting: "#616161"
+};
+function viewHtml(wf, state) {
+  const nodes = [...wf.graph.nodes()];
+  const key = new Map(nodes.map((n, i) => [n.id, `n${i}`]));
+  const lines = ["flowchart TD"];
+  for (const [status, color] of Object.entries(COLORS)) {
+    lines.push(`  classDef ${status} fill:${color},stroke:${color},color:#fff`);
+  }
+  for (const node of nodes) {
+    const d = node.data;
+    const status = statusOf(wf, node);
+    const extra = [d.attempts > 1 ? `attempt ${d.attempts}` : "", d.check ? "\u2713 checked" : ""].filter(Boolean).join(" \xB7 ");
+    const label = [`<b>${label_(node.id)}</b>`, label_(clip2(d.title, 48)), extra].filter(Boolean).join("<br/>");
+    lines.push(`  ${key.get(node.id)}["${label}"]:::${status}`);
+  }
+  for (const node of nodes) {
+    for (const edge of wf.graph.dependencyEdges(node.id)) {
+      if (node.id === GOAL && wf.graph.dependentEdges(edge.dependsOn).length > 1) continue;
+      const text2 = edge.data?.label ? `|"${label_(clip2(edge.data.label, 30))}"|` : "";
+      lines.push(`  ${key.get(edge.dependsOn)} -->${text2} ${key.get(node.id)}`);
+    }
+  }
+  const questions = wf.questions().map((q) => `<li><b>${esc2(q.nodeId)}</b>: ${esc2(q.question)}</li>`);
+  const errors = nodes.filter((n) => n.state !== "completed" && n.data.lastError && !wf.isWaiting(n)).map((n) => `<li><b>${esc2(n.id)}</b>: ${esc2(clip2(n.data.lastError ?? "", 300))}</li>`);
+  const legend = LEGEND.map(([s, text2]) => `<span><i style="background:${COLORS[s]}"></i>${text2}</span>`).join("");
+  const done = wf.graph.count("completed");
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+body{font:14px system-ui,sans-serif;margin:12px;color:CanvasText;background:transparent}
+:root[data-theme=dark]{color-scheme:dark}:root[data-theme=light]{color-scheme:light}
+h3{margin:0 0 4px}p{margin:0 0 8px;opacity:.8}.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;margin-bottom:8px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}ul{padding-left:18px}
+</style></head><body>
+<h3>${esc2(wf.goal)}</h3>
+<p>${esc2(wf.id)} \xB7 ${done}/${wf.graph.size} steps done \xB7 ${esc2(state)}</p>
+<div class="legend">${legend}</div>
+<pre class="mermaid">${esc2(lines.join("\n"))}</pre>
+${questions.length ? `<h4>Needs you</h4><ul>${questions.join("")}</ul>` : ""}
+${errors.length ? `<h4>Last errors</h4><ul>${errors.join("")}</ul>` : ""}
+<script src="/canvas-lib/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,securityLevel:"loose",theme:document.documentElement.dataset.theme==="dark"?"dark":"default"});</script>
+</body></html>`;
+}
+function statusOf(wf, node) {
+  if (node.state === "completed") return "done";
+  if (wf.isWaiting(node)) return "asking";
+  if (node.state === "in-progress") return node.data.attempts > 1 ? "retrying" : "running";
+  if (node.state === "ready") return "ready";
+  return "waiting";
+}
+function esc2(text2) {
+  return text2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function label_(text2) {
+  return text2.replace(/"/g, "#quot;").replace(/[<>]/g, "").replace(/\s+/g, " ");
+}
+function clip2(text2, max) {
+  return text2.length <= max ? text2 : `${text2.slice(0, max - 1)}\u2026`;
+}
+
+// src/canvas.ts
+var INBOX_ENV = "AGENTS_CANVAS_INBOX";
+var SESSION_ENV = "COPILOT_AGENT_SESSION_ID";
+function canvasName(wf) {
+  return `workflow-${wf.id}`.slice(0, 64);
+}
+function canvasTitle(wf) {
+  const goal = wf.goal.replace(/\s+/g, " ").trim();
+  return goal.length > 80 ? `${goal.slice(0, 79)}\u2026` : goal;
+}
+async function publishCanvas(wf, state, env = process.env) {
+  const inbox = env[INBOX_ENV];
+  const sessionId = env[SESSION_ENV];
+  if (!inbox || !sessionId) return false;
+  try {
+    await mkdir2(inbox, { recursive: true, mode: 448 });
+    const message = { sessionId, name: canvasName(wf), kind: "html", title: canvasTitle(wf), content: viewHtml(wf, state) };
+    const file2 = join2(inbox, `${sessionId}-${wf.id}-${Date.now()}-${process.pid}`);
+    await writeFile2(`${file2}.tmp`, JSON.stringify(message), { mode: 384 });
+    await rename2(`${file2}.tmp`, `${file2}.json`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// src/check.ts
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+var OUTPUT_TAIL = 12e3;
+var GROUP = process.platform !== "win32";
+function runCheck(command, cwd, signal) {
+  if (!existsSync(cwd)) {
+    return Promise.resolve({ ok: false, output: `The check directory does not exist: ${cwd}` });
+  }
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    let output = "";
+    const child = spawn(command, { cwd, shell: true, env: { ...process.env, CI: "true" }, detached: GROUP, stdio: ["ignore", "pipe", "pipe"] });
+    const kill = () => {
+      try {
+        if (GROUP && child.pid) process.kill(-child.pid, "SIGTERM");
+        else child.kill();
+      } catch {
+      }
+    };
+    signal?.addEventListener("abort", kill, { once: true });
+    const collect = (chunk) => {
+      output = tail(output + chunk.toString(), OUTPUT_TAIL);
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    child.on("error", (error2) => {
+      signal?.removeEventListener("abort", kill);
+      resolve({ ok: false, output: `Could not run the check: ${error2.message}` });
+    });
+    child.on("close", (code, killedBy) => {
+      signal?.removeEventListener("abort", kill);
+      if (signal?.aborted) return reject(signal.reason);
+      const status = code === 0 ? "" : `
+(exit ${code ?? killedBy})`;
+      resolve({ ok: code === 0, output: `$ ${command}
+${output.trimEnd()}${status}` });
+    });
+  });
+}
+
 // src/prompt.ts
 var GOAL_INSTRUCTIONS = `Every other step reports done. Check that the goal above is really met: inspect the actual files, branches, commits and command output instead of trusting the summaries below.
 - If it is met, report done.
@@ -22772,89 +22875,16 @@ Steps marked "running now" run at the same time as this one; do not change files
   return parts.join("\n\n");
 }
 
-// src/view.ts
-var LEGEND = [
-  ["done", "done"],
-  ["running", "running"],
-  ["retrying", "running again"],
-  ["asking", "needs you"],
-  ["ready", "ready"],
-  ["waiting", "waiting on steps"]
-];
-var COLORS = {
-  done: "#2e7d32",
-  running: "#1565c0",
-  retrying: "#ef6c00",
-  asking: "#c62828",
-  ready: "#6a1b9a",
-  waiting: "#616161"
-};
-function viewHtml(wf, state) {
-  const nodes = [...wf.graph.nodes()];
-  const key = new Map(nodes.map((n, i) => [n.id, `n${i}`]));
-  const lines = ["flowchart TD"];
-  for (const [status, color] of Object.entries(COLORS)) {
-    lines.push(`  classDef ${status} fill:${color},stroke:${color},color:#fff`);
-  }
-  for (const node of nodes) {
-    const d = node.data;
-    const status = statusOf(wf, node);
-    const extra = [d.attempts > 1 ? `attempt ${d.attempts}` : "", d.check ? "\u2713 checked" : ""].filter(Boolean).join(" \xB7 ");
-    const label = [`<b>${label_(node.id)}</b>`, label_(clip2(d.title, 48)), extra].filter(Boolean).join("<br/>");
-    lines.push(`  ${key.get(node.id)}["${label}"]:::${status}`);
-  }
-  for (const node of nodes) {
-    for (const edge of wf.graph.dependencyEdges(node.id)) {
-      if (node.id === GOAL && wf.graph.dependentEdges(edge.dependsOn).length > 1) continue;
-      const text2 = edge.data?.label ? `|"${label_(clip2(edge.data.label, 30))}"|` : "";
-      lines.push(`  ${key.get(edge.dependsOn)} -->${text2} ${key.get(node.id)}`);
-    }
-  }
-  const questions = wf.questions().map((q) => `<li><b>${esc2(q.nodeId)}</b>: ${esc2(q.question)}</li>`);
-  const errors = nodes.filter((n) => n.state !== "completed" && n.data.lastError && !wf.isWaiting(n)).map((n) => `<li><b>${esc2(n.id)}</b>: ${esc2(clip2(n.data.lastError ?? "", 300))}</li>`);
-  const legend = LEGEND.map(([s, text2]) => `<span><i style="background:${COLORS[s]}"></i>${text2}</span>`).join("");
-  const done = wf.graph.count("completed");
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
-body{font:14px system-ui,sans-serif;margin:12px;color:CanvasText;background:transparent}
-:root[data-theme=dark]{color-scheme:dark}:root[data-theme=light]{color-scheme:light}
-h3{margin:0 0 4px}p{margin:0 0 8px;opacity:.8}.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;margin-bottom:8px}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}ul{padding-left:18px}
-</style></head><body>
-<h3>${esc2(wf.goal)}</h3>
-<p>${esc2(wf.id)} \xB7 ${done}/${wf.graph.size} steps done \xB7 ${esc2(state)}</p>
-<div class="legend">${legend}</div>
-<pre class="mermaid">${esc2(lines.join("\n"))}</pre>
-${questions.length ? `<h4>Needs you</h4><ul>${questions.join("")}</ul>` : ""}
-${errors.length ? `<h4>Last errors</h4><ul>${errors.join("")}</ul>` : ""}
-<script src="/canvas-lib/mermaid.min.js"></script>
-<script>mermaid.initialize({startOnLoad:true,securityLevel:"loose",theme:document.documentElement.dataset.theme==="dark"?"dark":"default"});</script>
-</body></html>`;
-}
-function statusOf(wf, node) {
-  if (node.state === "completed") return "done";
-  if (wf.isWaiting(node)) return "asking";
-  if (node.state === "in-progress") return node.data.attempts > 1 ? "retrying" : "running";
-  if (node.state === "ready") return "ready";
-  return "waiting";
-}
-function esc2(text2) {
-  return text2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-function label_(text2) {
-  return text2.replace(/"/g, "#quot;").replace(/[<>]/g, "").replace(/\s+/g, " ");
-}
-function clip2(text2, max) {
-  return text2.length <= max ? text2 : `${text2.slice(0, max - 1)}\u2026`;
-}
-
 // src/host.ts
 var LAUNCH = `Launch each step below now as its own background \`task\` subagent (agent_type "general-purpose"), passing the text inside <step-prompt> exactly as written. Do not do the steps yourself. When a subagent finishes, call dw_report with the workflowId, its stepId and attempt, and the subagent's final message.`;
 var ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to dw_answer. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
 var Host = class {
   #check;
+  #env;
   #queues = /* @__PURE__ */ new Map();
   constructor(options = {}) {
     this.#check = options.check ?? runCheck;
+    this.#env = options.env ?? process.env;
   }
   async plan(rawArgs) {
     const args = record2(rawArgs, "arguments");
@@ -22867,7 +22897,8 @@ var Host = class {
     };
     return this.#serial(root, async () => {
       const wf = Workflow.create(root, input);
-      return `Created workflow ${wf.id}.
+      const shown = this.#env[INBOX_ENV] ? " Its step graph shows in the user's side panel and updates by itself." : "";
+      return `Created workflow ${wf.id}.${shown}
 
 ${await this.#advance(wf)}`;
     });
@@ -22982,6 +23013,7 @@ ${html}`;
       prompt: buildPrompt(wf, stepId)
     }));
     await wf.flush();
+    await publishCanvas(wf, stateOf(wf), this.#env);
     return nextText(wf, launches);
   }
   #serial(root, task) {
@@ -23253,7 +23285,7 @@ var tools = [
     handler: (args) => host.view(args)
   }
 ];
-var server = new Server({ name: "dynamic-workflows", version: "0.3.1" }, { capabilities: { tools: {} } });
+var server = new Server({ name: "dynamic-workflows", version: "0.4.0" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))
 }));

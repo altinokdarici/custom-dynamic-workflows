@@ -27,7 +27,7 @@ Every `dw_*` reply ends with what to do next. Follow it until the workflow is do
 
 1. **Launch.** For each `### workflowId …, stepId …, attempt …` block, start a background `task` subagent (agent_type `general-purpose`, mode `background`) whose prompt is the text inside `<step-prompt>`, exactly as written. Launch all of them at once. Tell the user briefly which steps started.
 2. **Report.** When a subagent finishes, read its final message (`read_agent`) and call `dw_report` with `workflowId`, `stepId`, `attempt` and that message unchanged as `report`. If the subagent failed or was cancelled, report the error text instead. Then launch whatever the reply hands out.
-3. **Show progress.** If you have a `canvas_show` tool, call `dw_view` after `dw_plan` and after every `dw_report`, `dw_answer`, `dw_add_task` and `dw_run`, and pass the page it returns to `canvas_show` unchanged. The same canvas name updates the panel in place. Skip this when you have no `canvas_show`.
+3. **Progress view.** In Agents, the step graph appears in the user's side panel and updates by itself; `dw_plan` says so. Only if it doesn't say so and you have a `canvas_show` tool, call `dw_view` after `dw_plan` and after every `dw_report`, `dw_answer`, `dw_add_task` and `dw_run`, and pass the page it returns to `canvas_show` unchanged.
 4. **Wait.** While subagents are still running and nothing new is handed out, end your turn; you are notified when one finishes.
 5. **Done.** When a reply says the workflow is done, tell the user, including any answers and check changes it lists.
 

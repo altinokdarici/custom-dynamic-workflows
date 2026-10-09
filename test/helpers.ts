@@ -89,7 +89,7 @@ export async function runPass(
   options: { agent: (prompt: string, label: string) => Promise<unknown>; check: CheckFn; host?: Host },
 ): Promise<Simulated> {
   await wf.flush();
-  const host = options.host ?? new Host({ check: options.check });
+  const host = options.host ?? new Host({ check: options.check, env: {} });
   const cwd = wf.root;
   let text = await host.run({ cwd, workflowId: wf.id });
   const running = new Set<Promise<void>>();
