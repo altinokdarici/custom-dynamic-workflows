@@ -32,8 +32,9 @@ export function viewHtml(wf: Workflow, state: string): string {
     const d = node.data;
     const status = statusOf(wf, node);
     const extra = [d.attempts > 1 ? `attempt ${d.attempts}` : "", d.check ? "✓ checked" : ""].filter(Boolean).join(" · ");
-    const label = [`<b>${label_(node.id)}</b>`, label_(clip(d.title, 48)), extra].filter(Boolean).join("<br/>");
-    lines.push(`  ${key.get(node.id)}["${label}"]:::${status}`);
+    // A markdown string: bold and line breaks render as SVG text, which iOS WebKit draws reliably.
+    const label = [`**${label_(node.id)}**`, label_(clip(d.title, 48)), extra].filter(Boolean).join("\n");
+    lines.push(`  ${key.get(node.id)}["\`${label}\`"]:::${status}`);
   }
   for (const node of nodes) {
     for (const edge of wf.graph.dependencyEdges(node.id)) {
@@ -82,7 +83,7 @@ function esc(text: string): string {
 
 /** Text inside a quoted Mermaid label: quotes become entities, and markup characters are dropped. */
 function label_(text: string): string {
-  return text.replace(/"/g, "#quot;").replace(/[<>]/g, "").replace(/\s+/g, " ");
+  return text.replace(/"/g, "#quot;").replace(/[<>`*]/g, "").replace(/\s+/g, " ");
 }
 
 function clip(text: string, max: number): string {

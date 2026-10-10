@@ -22662,8 +22662,8 @@ function viewHtml(wf, state) {
     const d = node.data;
     const status = statusOf(wf, node);
     const extra = [d.attempts > 1 ? `attempt ${d.attempts}` : "", d.check ? "\u2713 checked" : ""].filter(Boolean).join(" \xB7 ");
-    const label = [`<b>${label_(node.id)}</b>`, label_(clip2(d.title, 48)), extra].filter(Boolean).join("<br/>");
-    lines.push(`  ${key.get(node.id)}["${label}"]:::${status}`);
+    const label = [`**${label_(node.id)}**`, label_(clip2(d.title, 48)), extra].filter(Boolean).join("\n");
+    lines.push(`  ${key.get(node.id)}["\`${label}\`"]:::${status}`);
   }
   for (const node of nodes) {
     for (const edge of wf.graph.dependencyEdges(node.id)) {
@@ -22703,7 +22703,7 @@ function esc2(text2) {
   return text2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 function label_(text2) {
-  return text2.replace(/"/g, "#quot;").replace(/[<>]/g, "").replace(/\s+/g, " ");
+  return text2.replace(/"/g, "#quot;").replace(/[<>`*]/g, "").replace(/\s+/g, " ");
 }
 function clip2(text2, max) {
   return text2.length <= max ? text2 : `${text2.slice(0, max - 1)}\u2026`;
