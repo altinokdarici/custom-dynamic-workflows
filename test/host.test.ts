@@ -132,9 +132,9 @@ test("dw_view renders the graph colored by status, with questions, for a canvas"
   const html = view.slice(view.indexOf("<!doctype html>"));
   assert.match(html, /<script src="\/canvas-lib\/mermaid\.min\.js"><\/script>/);
   const mermaid = /<pre class="mermaid">([\s\S]*?)<\/pre>/.exec(html)![1]!;
-  assert.match(mermaid, /n0\[&quot;&lt;b&gt;a&lt;\/b&gt;.*\]:::done/);
-  assert.match(mermaid, /n1\[.*\]:::asking/);
-  assert.match(mermaid, /n2\[.*\]:::running/);
+  assert.match(mermaid, /n0\[&quot;`\*\*a\*\*\nStep a`&quot;\]:::done/);
+  assert.match(mermaid, /n1\[[^\]]*\]:::asking/);
+  assert.match(mermaid, /n2\[[^\]]*\]:::running/);
   assert.match(mermaid, /n0 --&gt; n2/);
   assert.match(html, /<li><b>b<\/b>: Use &quot;x&quot; &lt;or&gt; y\?<\/li>/);
   assert.match(html, /1\/4 steps done/);
