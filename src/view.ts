@@ -64,7 +64,7 @@ h3{margin:0 0 4px}p{margin:0 0 8px;opacity:.8}.legend{display:flex;flex-wrap:wra
 ${questions.length ? `<h4>Needs you</h4><ul>${questions.join("")}</ul>` : ""}
 ${errors.length ? `<h4>Last errors</h4><ul>${errors.join("")}</ul>` : ""}
 <script src="/canvas-lib/mermaid.min.js"></script>
-<script>mermaid.initialize({startOnLoad:true,securityLevel:"loose",theme:document.documentElement.dataset.theme==="dark"?"dark":"default"});</script>
+<script>mermaid.initialize({startOnLoad:true,securityLevel:"loose",htmlLabels:false,flowchart:{htmlLabels:false},theme:document.documentElement.dataset.theme==="dark"?"dark":"default"});</script>
 </body></html>`;
 }
 
