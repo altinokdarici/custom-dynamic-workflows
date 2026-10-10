@@ -159,7 +159,7 @@ const tools: { name: string; description: string; inputSchema: Record<string, un
   },
 ];
 
-const server = new Server({ name: "dynamic-workflows", version: "0.4.0" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "dynamic-workflows", version: "0.4.1" }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),

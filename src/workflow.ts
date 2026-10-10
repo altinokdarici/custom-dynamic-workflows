@@ -50,6 +50,11 @@ export class Workflow {
     this.graph = graph;
   }
 
+  /** The workflow's state file. */
+  get path(): string {
+    return this.#store.path;
+  }
+
   static create(root: string, input: CreateInput): Workflow {
     const goal = input.goal?.trim();
     if (!goal) throw new InputError("goal must be a non-empty string.");

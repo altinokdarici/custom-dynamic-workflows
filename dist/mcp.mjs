@@ -22303,6 +22303,10 @@ var Workflow = class _Workflow {
     this.#store = store;
     this.graph = graph;
   }
+  /** The workflow's state file. */
+  get path() {
+    return this.#store.path;
+  }
   static create(root, input) {
     const goal = input.goal?.trim();
     if (!goal) throw new InputError("goal must be a non-empty string.");
@@ -22777,6 +22781,8 @@ ${output.trimEnd()}${status}` });
 }
 
 // src/prompt.ts
+var RESULTS_BUDGET = 16e3;
+var MIN_SHARE = 800;
 var GOAL_INSTRUCTIONS = `Every other step reports done. Check that the goal above is really met: inspect the actual files, branches, commits and command output instead of trusting the summaries below.
 - If it is met, report done.
 - If anything is missing or wrong, report blocked and describe the fixes as newTasks.`;
@@ -22840,12 +22846,27 @@ Before reporting, run it yourself exactly as written from the project root, and 
   }
   const deps = wf.graph.dependencyEdges(id);
   if (deps.length) {
-    const lines = deps.map((edge) => {
+    const results = deps.map((edge) => wf.node(edge.dependsOn).data.result ?? "(no summary)");
+    const total = results.reduce((sum, r) => sum + r.length, 0);
+    const share = total > RESULTS_BUDGET ? Math.max(MIN_SHARE, Math.floor(RESULTS_BUDGET / deps.length)) : Infinity;
+    let clipped = false;
+    const lines = deps.map((edge, i) => {
       const dep = wf.node(edge.dependsOn);
       const label = edge.data?.label ? ` (${edge.data.label})` : "";
+      let result = results[i];
+      if (result.length > share) {
+        result = `${result.slice(0, share)}\u2026 [shortened; ${result.length} characters in full]`;
+        clipped = true;
+      }
       return `- ${dep.id}: ${dep.data.title}${label}
-${indent(dep.data.result ?? "(no summary)", "    ")}`;
+${indent(result, "    ")}`;
     });
+    if (clipped) {
+      lines.push(
+        `Some summaries are shortened to keep this prompt small. Print one in full with:
+    node -e 'for (const n of require(process.argv[1]).graph.nodes) if (n.id === process.argv[2]) console.log(n.data.result)' ${JSON.stringify(wf.path)} <step-id>`
+      );
+    }
     parts.push(`## Steps this one waited for
 ${lines.join("\n")}`);
   }
@@ -22868,7 +22889,7 @@ Answer: ${data.answer ?? "(none yet)"}`);
     parts.push(
       `## Other steps in this workflow
 ${lines.join("\n")}
-Steps marked "running now" run at the same time as this one; do not change files they own.`
+Steps marked "running now" run at the same time as this one, possibly in the same checkout. Do not change or revert files they own. If a wider build or test run fails only in their files, it is not yours to fix: say so in your summary, and make sure your own part and your check pass.`
     );
   }
   parts.push(RULES, REPORT);
@@ -23285,7 +23306,7 @@ var tools = [
     handler: (args) => host.view(args)
   }
 ];
-var server = new Server({ name: "dynamic-workflows", version: "0.4.0" }, { capabilities: { tools: {} } });
+var server = new Server({ name: "dynamic-workflows", version: "0.4.1" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))
 }));

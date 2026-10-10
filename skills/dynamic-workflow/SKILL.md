@@ -18,7 +18,7 @@ Every tool takes `cwd`: the absolute path of your current working directory.
    - `check`: a shell command that proves the step is done, such as `npm test -- foo` or `node scripts/evals.mjs foo`. Add one whenever a command can verify the step. It runs from the repo root; for a step in a worktree, write `cd .worktrees/foo && npm test`.
    - `dependsOn`: only real ordering needs. Use `{ "id": "...", "label": "why" }` when the reason helps the later step.
    - When a step's result decides the follow-up work (an audit that splits work into groups), tell that step to return the follow-ups as `newTasks` in its report. They are then added before the goal check starts.
-4. `concurrency`: decide how many steps can safely run at once. Steps that run together must not edit the same files or switch branches in the same checkout. For one branch per item, either create a git worktree per item (keep `.worktrees/` git-ignored) and say in the step's instructions to work there, or use concurrency 1.
+4. `concurrency`: decide how many steps can safely run at once. Steps that run together must not edit the same files or switch branches in the same checkout. For one branch per item, either create a git worktree per item (keep `.worktrees/` git-ignored) and say in the step's instructions to work there, or use concurrency 1. When parallel steps share one checkout, make each step's check cover that step's own work (its tests, its package); a whole-repo check can fail on another step's half-done files. Leave the whole-repo run to later steps and the goal check.
 5. `goal`: state it as the user would verify it. Add a `goalCheck` command if one exists. It can't be changed later: it is the definition of done.
 
 ## Running the steps

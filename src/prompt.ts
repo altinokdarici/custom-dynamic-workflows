@@ -1,4 +1,8 @@
 import { indent } from "./text.ts";
+
+/** Most characters of earlier steps' summaries put in one prompt; the rest stays readable in the state file. */
+export const RESULTS_BUDGET = 16_000;
+const MIN_SHARE = 800;
 import { GOAL, type Workflow } from "./workflow.ts";
 
 const GOAL_INSTRUCTIONS = `Every other step reports done. Check that the goal above is really met: inspect the actual files, branches, commits and command output instead of trusting the summaries below.
@@ -70,11 +74,25 @@ export function buildPrompt(wf: Workflow, id: string): string {
 
   const deps = wf.graph.dependencyEdges(id);
   if (deps.length) {
-    const lines = deps.map((edge) => {
+    const results = deps.map((edge) => wf.node(edge.dependsOn).data.result ?? "(no summary)");
+    const total = results.reduce((sum, r) => sum + r.length, 0);
+    const share = total > RESULTS_BUDGET ? Math.max(MIN_SHARE, Math.floor(RESULTS_BUDGET / deps.length)) : Infinity;
+    let clipped = false;
+    const lines = deps.map((edge, i) => {
       const dep = wf.node(edge.dependsOn);
       const label = edge.data?.label ? ` (${edge.data.label})` : "";
-      return `- ${dep.id}: ${dep.data.title}${label}\n${indent(dep.data.result ?? "(no summary)", "    ")}`;
+      let result = results[i]!;
+      if (result.length > share) {
+        result = `${result.slice(0, share)}… [shortened; ${result.length} characters in full]`;
+        clipped = true;
+      }
+      return `- ${dep.id}: ${dep.data.title}${label}\n${indent(result, "    ")}`;
     });
+    if (clipped) {
+      lines.push(
+        `Some summaries are shortened to keep this prompt small. Print one in full with:\n    node -e 'for (const n of require(process.argv[1]).graph.nodes) if (n.id === process.argv[2]) console.log(n.data.result)' ${JSON.stringify(wf.path)} <step-id>`,
+      );
+    }
     parts.push(`## Steps this one waited for\n${lines.join("\n")}`);
   }
 
@@ -91,7 +109,7 @@ export function buildPrompt(wf: Workflow, id: string): string {
       return `- [${state}] ${other.id}: ${other.data.title}`;
     });
     parts.push(
-      `## Other steps in this workflow\n${lines.join("\n")}\nSteps marked "running now" run at the same time as this one; do not change files they own.`,
+      `## Other steps in this workflow\n${lines.join("\n")}\nSteps marked "running now" run at the same time as this one, possibly in the same checkout. Do not change or revert files they own. If a wider build or test run fails only in their files, it is not yours to fix: say so in your summary, and make sure your own part and your check pass.`,
     );
   }
 

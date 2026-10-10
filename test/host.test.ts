@@ -161,3 +161,33 @@ test("in an Agents session every state change drops the step graph into the canv
   assert.equal(last.title, "Ship it");
   assert.match(last.content, /flowchart TD/);
 });
+
+test("long summaries are shortened in later prompts, and the printed command shows them in full", async (t) => {
+  const { execFileSync } = await import("node:child_process");
+  const cwd = await tempRoot(t);
+  const host = new Host({ check: fakeCheck().check, env: {} });
+  const ids = ["a", "b", "c", "d"];
+  const text = await host.plan({ cwd, goal: "Big", concurrency: 4, tasks: ids.map((id) => task(id)) });
+  const workflowId = /Created workflow (\S+)\./.exec(text)![1]!;
+  const long = (id: string) => `${id}-start ${"x".repeat(9_000)} ${id}-end`;
+  let last = "";
+  for (const id of ids) last = await host.report({ cwd, workflowId, stepId: id, attempt: 1, report: done(long(id)) });
+  const goal = launches(last).find((l) => l.stepId === "goal")!;
+  assert.ok(goal.prompt.length < 24_000, `goal prompt is ${goal.prompt.length} characters`);
+  for (const id of ids) assert.match(goal.prompt, new RegExp(`${id}-start`));
+  assert.doesNotMatch(goal.prompt, /a-end/);
+  const command = /^\s+(node -e .*) <step-id>$/m.exec(goal.prompt)![1]!;
+  const full = execFileSync("sh", ["-c", `${command} b`], { encoding: "utf8" }).trim();
+  assert.equal(full, long("b"));
+});
+
+test("short summaries are passed on whole", async (t) => {
+  const cwd = await tempRoot(t);
+  const host = new Host({ check: fakeCheck().check, env: {} });
+  const text = await host.plan({ cwd, goal: "Small", concurrency: 1, tasks: [task("a")] });
+  const workflowId = /Created workflow (\S+)\./.exec(text)![1]!;
+  const after = await host.report({ cwd, workflowId, stepId: "a", attempt: 1, report: done("all good") });
+  const goal = launches(after).find((l) => l.stepId === "goal")!;
+  assert.match(goal.prompt, /all good/);
+  assert.doesNotMatch(goal.prompt, /shortened/);
+});

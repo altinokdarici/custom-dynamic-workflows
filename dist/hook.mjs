@@ -959,6 +959,10 @@ var Workflow = class _Workflow {
     this.#store = store;
     this.graph = graph;
   }
+  /** The workflow's state file. */
+  get path() {
+    return this.#store.path;
+  }
   static create(root, input) {
     const goal = input.goal?.trim();
     if (!goal) throw new InputError("goal must be a non-empty string.");
