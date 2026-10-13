@@ -93,7 +93,7 @@ copilot --plugin-dir /path/to/work-graph          # one session, from a clone
 
 ```sh
 claude plugin marketplace add altinokdarici/work-graph
-claude plugin install work-graph@altinok   # every session
+claude plugin install work-graph@work-graph   # every session
 claude --plugin-dir /path/to/work-graph                      # one session, from a clone
 ```
 
