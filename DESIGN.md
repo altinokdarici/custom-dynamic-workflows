@@ -1,6 +1,6 @@
 # custom-dynamic-workflows: Design
 
-Status: v1 (plugin 0.2: MCP server, hook and skill), built and tried. Owner: Altinok Darici.
+Status: v1 (plugin 0.2: MCP server, hook and skill), built and tried.
 
 v1 is deliberately small. It replaces the larger v2 design; §12 lists what was cut and why.
 
@@ -257,7 +257,7 @@ Code trusts the model for the following. The goal step re-checks the result.
 
 ## 11. Tried it
 
-**Unit tests.** 24 tests use `node --test` with a fake agent and fake checks. A helper plays the main agent: it reads the hand-outs from the reply text, runs the fake agent, and calls `dw_report`. They cover:
+**Unit tests.** 31 tests use `node --test` with a fake agent and fake checks. A helper plays the main agent: it reads the hand-outs from the reply text, runs the fake agent, and calls `dw_report`. They cover:
 
 - the concurrency pool and dependency order;
 - a failing check retried with its output, and the same failure twice turning into a question;

@@ -1401,7 +1401,12 @@ ${lines.join("\n")}
 Mention them to the user. If the user wants to continue one, call dw_run (it requeues steps whose subagents are gone). Never resume without the user asking.`
     );
   }
-  if (parts.length) process.stdout.write(JSON.stringify({ additionalContext: parts.join("\n\n") }));
+  if (parts.length) {
+    const additionalContext = parts.join("\n\n");
+    process.stdout.write(
+      JSON.stringify({ additionalContext, hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } })
+    );
+  }
 }
 function firstTime(session, root) {
   const dir = join2(tmpdir(), "dynamic-workflows-hook");

@@ -3,7 +3,13 @@
   "version": "0.4.1",
   "private": true,
   "type": "module",
-  "description": "Copilot CLI plugin that turns a task into a graph of steps (p-graph) and runs every step to completion.",
+  "description": "Copilot CLI and Claude Code plugin that turns a task into a graph of steps (p-graph) and runs every step to completion.",
+  "license": "MIT",
+  "author": "Altinok Darici",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/altinokdarici/custom-dynamic-workflows.git"
+  },
   "engines": {
     "node": ">=22.18"
   },

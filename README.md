@@ -1,6 +1,8 @@
 # custom-dynamic-workflows
 
-A GitHub Copilot CLI plugin (an MCP server, a prompt hook and a skill) that turns a task you describe in plain language into a graph of steps and runs every step to completion. Steps run in parallel where that's safe. Commands, not the model, decide when a step is done. The workflow asks you only when it's stuck.
+[![CI](https://github.com/altinokdarici/custom-dynamic-workflows/actions/workflows/ci.yml/badge.svg)](https://github.com/altinokdarici/custom-dynamic-workflows/actions/workflows/ci.yml)
+
+A plugin for GitHub Copilot CLI and Claude Code (an MCP server, a prompt hook and a skill) that turns a task you describe in plain language into a graph of steps and runs every step to completion. Steps run in parallel where that's safe. Commands, not the model, decide when a step is done. The workflow asks you only when it's stuck.
 
 ```text
 you: Migrate every skill and agent in .claude/ to the Copilot layout, one branch per item.
@@ -13,6 +15,14 @@ copilot ─ dw_plan ─▶  migrate-commit-helper ─┐
 ```
 
 The graph is a [p-graph](https://github.com/altinokdarici/p-graph): a dynamic priority graph with labelled edges. Steps can add steps while it runs.
+
+## Guarantees
+
+> **Code owns control flow. The model owns content.** Agents decide how to do a step and report what work they found. Code decides when a step is done, what runs next and when to ask you.
+
+1. **Nothing accepted is lost.** A step stays in the graph until it completes. No tool or report can remove, skip or complete a step; reports can only add work.
+2. **No false success.** A step completes only when its agent reports `done` and its `check` exits 0, run by the server. The workflow is done only when a final goal step has verified the goal against the repository.
+3. **Always resumable.** All state is one JSON file, written atomically after every change. After a crash, `dw_run` requeues interrupted steps.
 
 ## How it works
 
@@ -70,16 +80,28 @@ Every graph change goes through p-graph's store interface and is written atomica
 
 ## Use it
 
-Requires Node 22.18 or later on `PATH`. Works in the terminal CLI, in `-p` runs and in Agents-app (ACP) sessions.
+Requires Node 22.18 or later on `PATH`.
+
+**GitHub Copilot CLI** (terminal, `-p` runs and ACP sessions):
 
 ```sh
-copilot plugin install /path/to/custom-dynamic-workflows   # every session
-copilot --plugin-dir /path/to/custom-dynamic-workflows     # one session
+copilot plugin install altinokdarici/custom-dynamic-workflows   # every session
+copilot --plugin-dir /path/to/custom-dynamic-workflows          # one session, from a clone
+```
+
+**Claude Code:**
+
+```sh
+claude plugin marketplace add altinokdarici/custom-dynamic-workflows
+claude plugin install custom-dynamic-workflows@altinok-dynamic-workflows   # every session
+claude --plugin-dir /path/to/custom-dynamic-workflows                      # one session, from a clone
 ```
 
 Then describe the work and ask for a dynamic workflow, or just describe work that obviously splits into stages.
 
 Step subagents ask for permissions just as the main agent does. Allow the tools the steps need before a long run.
+
+Checks are shell commands the planning agent writes, and the server runs them on your machine. Read [SECURITY.md](SECURITY.md) before running workflows unattended.
 
 ## Develop
 
@@ -115,6 +137,11 @@ In an SDK session that stayed alive between turns:
 
 - **Dogfood.** The plugin fixed five of its own limitations, one branch and worktree each, merged into local main. It took 3.6 minutes, 18 subagent runs and about 124 AI credits. The planner wrote checks that `cd` into a directory the step was already in, so every check failed until the main agent worked around it with a symlink. The completion notification woke the idle session, and the main agent then answered the five resulting questions itself instead of asking the user. Review afterwards found that a second session could act on an old copy of a workflow. The fixes that followed: one way to say where a check runs (the repo root), `dw_answer` can replace a wrong check in the open, and a session re-reads workflows it isn't running; the run lock the dogfood run added was removed again.
 
+With 0.4 and two hosts:
+
+- **Copilot CLI 1.0.97** (`-p`): two steps at concurrency 2, then the goal step; every check passed on the first attempt.
+- **Claude Code 2.1**: `claude plugin validate` passes, and the skill, the MCP server and the hook load. The hook's open questions reach the model only through `hookSpecificOutput`, so the hook now prints both forms.
+
 Details are in [DESIGN.md §11](DESIGN.md#11-tried-it).
 
 ## Limitations
@@ -128,3 +155,7 @@ Details are in [DESIGN.md §11](DESIGN.md#11-tried-it).
 - An interrupted step runs again, so step instructions should be safe to repeat.
 
 See [DESIGN.md](DESIGN.md) for the reasoning.
+
+## License
+
+[MIT](LICENSE). Contributions welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).

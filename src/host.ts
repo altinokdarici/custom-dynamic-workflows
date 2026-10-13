@@ -25,7 +25,7 @@ export interface Launch {
   prompt: string;
 }
 
-const LAUNCH = `Launch each step below now as its own background \`task\` subagent (agent_type "general-purpose"), passing the text inside <step-prompt> exactly as written. Do not do the steps yourself. When a subagent finishes, call dw_report with the workflowId, its stepId and attempt, and the subagent's final message.`;
+const LAUNCH = `Launch each step below now as its own background general-purpose subagent (in Copilot CLI: the \`task\` tool, agent_type "general-purpose", mode "background"; in Claude Code: the Agent tool, subagent_type "general-purpose", run_in_background true), passing the text inside <step-prompt> exactly as written. Do not do the steps yourself. When a subagent finishes, call dw_report with the workflowId, its stepId and attempt, and the subagent's final message.`;
 const ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to dw_answer. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
 
 /**

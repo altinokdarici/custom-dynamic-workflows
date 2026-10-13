@@ -32,7 +32,13 @@ async function main(): Promise<void> {
       `These dynamic workflows of ${root} have work left:\n${lines.join("\n")}\nMention them to the user. If the user wants to continue one, call dw_run (it requeues steps whose subagents are gone). Never resume without the user asking.`,
     );
   }
-  if (parts.length) process.stdout.write(JSON.stringify({ additionalContext: parts.join("\n\n") }));
+  if (parts.length) {
+    const additionalContext = parts.join("\n\n");
+    // Copilot CLI reads the top-level field; Claude Code reads hookSpecificOutput.
+    process.stdout.write(
+      JSON.stringify({ additionalContext, hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } }),
+    );
+  }
 }
 
 /** True the first time a session asks about a project. */

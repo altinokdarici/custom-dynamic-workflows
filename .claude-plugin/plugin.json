@@ -11,7 +11,8 @@
     "orchestration",
     "priority-graph",
     "task-decomposition",
-    "copilot-cli"
+    "copilot-cli",
+    "claude-code"
   ],
-  "skills": "skills/"
+  "skills": "./skills/"
 }
