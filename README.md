@@ -80,7 +80,7 @@ Every graph change goes through p-graph's store interface and is written atomica
 
 ## Use it
 
-Requires Node 22.18 or later on `PATH`.
+Requires Node 24 or later on `PATH`.
 
 **GitHub Copilot CLI** (terminal, `-p` runs and ACP sessions):
 

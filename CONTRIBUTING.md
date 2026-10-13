@@ -4,7 +4,7 @@ Issues and pull requests are welcome. For anything bigger than a fix, open an is
 
 ## Setup
 
-Requires Node 22.18 or later.
+Requires Node 24 or later.
 
 ```sh
 npm install
