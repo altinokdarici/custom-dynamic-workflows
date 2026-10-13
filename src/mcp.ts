@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import pkg from "../package.json" with { type: "json" };
 import { Host } from "./host.ts";
 
 const TASK_SCHEMA = {
@@ -37,7 +38,7 @@ const CWD = {
   type: "string",
   description: "Absolute path of your current working directory. Workflows belong to its git repository.",
 };
-const WORKFLOW_ID = { type: "string", description: "Workflow id returned by dw_plan." };
+const WORKFLOW_ID = { type: "string", description: "Workflow id returned by the plan tool." };
 const LOOP = "Its reply lists the steps to launch as subagents and what to do next.";
 
 const host = new Host();
@@ -45,8 +46,8 @@ const host = new Host();
 type Handler = (args: unknown) => Promise<string>;
 const tools: { name: string; description: string; inputSchema: Record<string, unknown>; handler: Handler }[] = [
   {
-    name: "dw_plan",
-    description: `Create a dynamic workflow: a dependency graph of steps that runs until every step is done and a final goal check passes. You run each step as its own subagent; checks run in code. Use for work that splits into several stage-sized steps (see the dynamic-workflow skill). ${LOOP}`,
+    name: "plan",
+    description: `Create a workflow: a dependency graph of steps that runs until every step is done and a final goal check passes. You run each step as its own subagent; checks run in code. Use for work that splits into several stage-sized steps (see the work-graph skill). ${LOOP}`,
     inputSchema: {
       type: "object",
       required: ["cwd", "goal", "concurrency", "tasks"],
@@ -69,7 +70,7 @@ const tools: { name: string; description: string; inputSchema: Record<string, un
     handler: (args) => host.plan(args),
   },
   {
-    name: "dw_report",
+    name: "report",
     description: `Report a finished step subagent: pass its final message unchanged. The workflow reads the JSON report in it, runs the step's check, and records the result; a failing check sends the step back. ${LOOP}`,
     inputSchema: {
       type: "object",
@@ -85,7 +86,7 @@ const tools: { name: string; description: string; inputSchema: Record<string, un
     handler: (args) => host.report(args),
   },
   {
-    name: "dw_next",
+    name: "next",
     description: `Show what to do next for a workflow: steps to launch, reports still expected, questions for the user. ${LOOP}`,
     inputSchema: {
       type: "object",
@@ -95,7 +96,7 @@ const tools: { name: string; description: string; inputSchema: Record<string, un
     handler: (args) => host.next(args),
   },
   {
-    name: "dw_answer",
+    name: "answer",
     description: `Pass the user's answer to a question a step asked. If the step's check is wrong, pass a corrected \`check\` to replace it (not for the goal check); tell the user when you do. The step then runs again with the answer. Every answer and check change is kept and listed when the workflow finishes. ${LOOP}`,
     inputSchema: {
       type: "object",
@@ -111,7 +112,7 @@ const tools: { name: string; description: string; inputSchema: Record<string, un
     handler: (args) => host.answer(args),
   },
   {
-    name: "dw_add_task",
+    name: "add_step",
     description: `Add a step to a workflow. \`blocks\` lists existing steps that have not started yet and must wait for the new one. ${LOOP}`,
     inputSchema: {
       type: "object",
@@ -126,7 +127,7 @@ const tools: { name: string; description: string; inputSchema: Record<string, un
     handler: (args) => host.addTask(args),
   },
   {
-    name: "dw_run",
+    name: "resume",
     description: `Resume a workflow whose steps were handed to subagents that are gone (another session, a restart): those steps run again. Optionally change its concurrency. Never use it while this session's subagents still run steps. ${LOOP}`,
     inputSchema: {
       type: "object",
@@ -136,7 +137,7 @@ const tools: { name: string; description: string; inputSchema: Record<string, un
     handler: (args) => host.run(args),
   },
   {
-    name: "dw_status",
+    name: "status",
     description:
       "Show a workflow's steps, results, errors and open questions, or list the repository's workflows when workflowId is omitted.",
     inputSchema: {
@@ -147,7 +148,7 @@ const tools: { name: string; description: string; inputSchema: Record<string, un
     handler: (args) => host.status(args),
   },
   {
-    name: "dw_view",
+    name: "view",
     description:
       "Get a workflow's step graph, colored by status, as an HTML page for a canvas. If you have a canvas_show tool, pass the page to it unchanged as kind \"html\" with the name and title given.",
     inputSchema: {
@@ -159,7 +160,7 @@ const tools: { name: string; description: string; inputSchema: Record<string, un
   },
 ];
 
-const server = new Server({ name: "dynamic-workflows", version: "0.4.1" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "work-graph", version: pkg.version }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),

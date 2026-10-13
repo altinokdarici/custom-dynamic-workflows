@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0
+
+- Renamed from custom-dynamic-workflows to **work-graph** (repo, plugin, MCP server and skill). The marketplace is now `work-graph`: `claude plugin install work-graph@work-graph`.
+- Shorter tool names; hosts already prefix them with the server name (`work-graph-plan`, `mcp__plugin_work-graph_work-graph__plan`): `plan`, `next`, `report`, `answer`, `add_step` (was `dw_add_task`), `resume` (was `dw_run`), `status`, `view`.
+- The MCP server reports the package version.
+- Existing workflows in `.copilot/workflows/` still resume.
+
 ## 0.5.0
 
 - Works in Claude Code as well as Copilot CLI: host-neutral subagent launch instructions, and `plugin.json` paths that pass `claude plugin validate`.

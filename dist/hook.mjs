@@ -1335,7 +1335,7 @@ ${JSON.stringify(OUTCOME_SCHEMA)}
 ${"```"}`;
 
 // src/host.ts
-var ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to dw_answer. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
+var ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to the answer tool. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
 function questionsText(questions) {
   const lines = questions.map((q) => `- workflow ${q.workflowId}, step ${q.nodeId} (${q.title}): ${q.question}`);
   return `Steps waiting for the user's answer:
@@ -1349,7 +1349,7 @@ function stateOf(wf) {
   if (out) parts.push(`${out} step(s) handed out to subagents`);
   const asking = wf.questions().length;
   if (asking) parts.push(`${asking} step(s) wait for the user's answer`);
-  if (!out && wf.graph.count("ready")) parts.push("paused (dw_run resumes it)");
+  if (!out && wf.graph.count("ready")) parts.push("paused (the resume tool continues it)");
   return parts.join("; ") || "stuck";
 }
 async function loadAll(root) {
@@ -1388,7 +1388,7 @@ async function main() {
   const questions = all.flatMap((wf) => wf.questions());
   if (questions.length) {
     parts.push(
-      `Dynamic workflow ${questionsText(questions)} If the user's message answers one, pass it to dw_answer (cwd ${root}). Otherwise mention that these questions are open.`
+      `work-graph: ${questionsText(questions)} If the user's message answers one, pass it to the work-graph answer tool (cwd ${root}). Otherwise mention that these questions are open.`
     );
   }
   const left = all.filter((wf) => !wf.graph.isComplete && (wf.inFlight().length || wf.graph.count("ready")));
@@ -1396,9 +1396,9 @@ async function main() {
   if (left.length && session && firstTime(session, root)) {
     const lines = left.map((wf) => `- ${wf.id}: ${stateOf(wf)}. ${wf.goal}`);
     parts.push(
-      `These dynamic workflows of ${root} have work left:
+      `These work-graph workflows of ${root} have work left:
 ${lines.join("\n")}
-Mention them to the user. If the user wants to continue one, call dw_run (it requeues steps whose subagents are gone). Never resume without the user asking.`
+Mention them to the user. If the user wants to continue one, call the work-graph resume tool (it requeues steps whose subagents are gone). Never resume without the user asking.`
     );
   }
   if (parts.length) {
@@ -1409,7 +1409,7 @@ Mention them to the user. If the user wants to continue one, call dw_run (it req
   }
 }
 function firstTime(session, root) {
-  const dir = join2(tmpdir(), "dynamic-workflows-hook");
+  const dir = join2(tmpdir(), "work-graph-hook");
   const key = createHash("sha256").update(`${session}
 ${root}`).digest("hex").slice(0, 32);
   try {

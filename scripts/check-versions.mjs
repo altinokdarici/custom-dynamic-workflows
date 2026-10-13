@@ -7,7 +7,7 @@ const versions = {
   "package.json": read("package.json").version,
   ".claude-plugin/plugin.json": read(".claude-plugin/plugin.json").version,
   ".claude-plugin/marketplace.json": read(".claude-plugin/marketplace.json").plugins.find(
-    (p) => p.name === "custom-dynamic-workflows",
+    (p) => p.name === "work-graph",
   )?.version,
 };
 

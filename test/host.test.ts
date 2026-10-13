@@ -18,7 +18,7 @@ async function planned(t: Parameters<typeof tempRoot>[0], check = fakeCheck().ch
   return { cwd, host, text, workflowId };
 }
 
-test("dw_plan hands out ready steps up to the concurrency; reports hand out the next ones", async (t) => {
+test("the plan tool hands out ready steps up to the concurrency; reports hand out the next ones", async (t) => {
   const { cwd, host, text, workflowId } = await planned(t);
   assert.deepEqual(
     launches(text).map((l) => `${l.stepId}#${l.attempt}`),
@@ -39,7 +39,7 @@ test("dw_plan hands out ready steps up to the concurrency; reports hand out the 
   assert.match(launches(afterA)[0]!.prompt, /- a: Step a\n\s+did a/);
 });
 
-test("a stale attempt's report is ignored after dw_run requeues the step", async (t) => {
+test("a stale attempt's report is ignored after the resume tool requeues the step", async (t) => {
   const { cwd, host, workflowId } = await planned(t);
   const resumed = await host.run({ cwd, workflowId });
   assert.match(resumed, /Requeued 2 step\(s\)/);
@@ -96,7 +96,7 @@ test("questions go to the user; answers can replace a check and are flagged", as
   );
 });
 
-test("tools need an absolute cwd; dw_status lists a project's workflows", async (t) => {
+test("tools need an absolute cwd; the status tool lists a project's workflows", async (t) => {
   const { cwd, host, workflowId } = await planned(t);
   await assert.rejects(host.status({ cwd: "relative" }), /absolute/);
   assert.match(await new Host().status({ cwd }), new RegExp(`- ${workflowId}: 2 step\\(s\\) handed out to subagents\\. Two things`));
@@ -121,7 +121,7 @@ test("a slow check doesn't hold up other calls", async (t) => {
   assert.match(await reportA, /done, and its check passed/);
 });
 
-test("dw_view renders the graph colored by status, with questions, for a canvas", async (t) => {
+test("the view tool renders the graph colored by status, with questions, for a canvas", async (t) => {
   const { cwd, host, workflowId } = await planned(t);
   await host.report({ cwd, workflowId, stepId: "a", attempt: 1, report: done("did a") });
   const ask = `\`\`\`json\n${JSON.stringify({ status: "needs_user", summary: "stuck", question: 'Use "x" <or> y?' })}\n\`\`\``;

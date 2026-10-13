@@ -27,7 +27,7 @@ export interface EdgeData {
 
 export type DepInput = string | { id: string; label?: string };
 
-/** A step as given by the planner (dw_plan, dw_add_task) or by an agent (newTasks). */
+/** A step as given by the planner (plan, add_step) or by an agent (newTasks). */
 export interface TaskInput extends NodeSpec {
   id: string;
   priority?: number;

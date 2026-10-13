@@ -1,5 +1,5 @@
 {
-  "name": "altinok-dynamic-workflows",
+  "name": "work-graph",
   "owner": {
     "name": "Altinok Darici",
     "url": "https://github.com/altinokdarici"
@@ -10,10 +10,10 @@
   },
   "plugins": [
     {
-      "name": "custom-dynamic-workflows",
+      "name": "work-graph",
       "source": "./",
       "description": "Turns a task you describe in plain language into a graph of steps and runs every step to completion: parallel where it can, checked by code, asking you only when it is stuck.",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "author": {
         "name": "Altinok Darici"
       },

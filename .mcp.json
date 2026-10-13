@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "dynamic-workflows": {
+    "work-graph": {
       "type": "stdio",
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp.mjs"]
