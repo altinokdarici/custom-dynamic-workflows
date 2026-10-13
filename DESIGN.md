@@ -15,7 +15,7 @@ Non-goals: a YAML/DSL, a general job scheduler, cross-machine execution, and rec
 No code can make an impossible task finish or an absent user answer. What the plugin guarantees:
 
 1. **Nothing accepted is lost.** A step written to the graph stays there until it completes. No tool or report removes or skips a step.
-2. **No false success.** A step completes only when its agent reports `done` and its `check`, if it has one, exits 0. The workflow is done only when every node is complete. That includes the final `goal` step, which runs last and checks the goal against the repository.
+2. **Checks written up front, enforced later.** A step completes only when its agent reports `done` and its `check`, if it has one, exits 0, and its changes don't weaken a check (§3, Guarding checks). The workflow is done only when every node is complete. That includes the final `goal` step, which runs last and checks the goal against the repository. The finished workflow lists what it rests on beyond checks written at planning.
 3. **Always resumable.** All state is in one JSON file, written atomically after every change. After a crash, `resume` puts interrupted steps back in the queue and tells their next attempt that they were interrupted.
 
 > **Code owns control flow. The model owns content.** Agents decide how to do a step and report what work they found. Code decides when a step is done, what runs next and when to ask the user.
@@ -115,6 +115,19 @@ There are no numeric caps. The skill and the report instructions keep plans at s
 - Any other exit code: the attempt fails with the command's output (the last 12k characters), and the step runs again with that output in its prompt (see §4).
 
 The step's prompt shows the check and asks the agent to run it before reporting, so most failures get fixed within the attempt. The server's run is the gate.
+
+### Guarding checks
+
+A model plans well while its context is fresh and is most tempted to cut corners late in a long run. Checks are written at planning, so the late part of the run can't change them (only the user can, through `answer`). It could still weaken what they run. So when a step is handed out, the server records a git baseline: `git stash create` in the check's directory (a snapshot commit that changes nothing), or the project's `HEAD` when that directory doesn't exist yet, such as a worktree the step creates. When the step reports `done` and its check passes, the server diffs the directory against the baseline and looks for:
+
+- added skip, todo or only markers (`it.skip`, `xit`, `{ skip: true }`, `@pytest.mark.skip`, `#[ignore]`, `t.Skip`, …);
+- deleted test files;
+- changed or deleted files that the step's check or the goal check names;
+- changed npm scripts that one of those checks runs.
+
+Any finding asks the user instead of completing the step. If the user says the change is intended, the step runs once more from a new baseline, which accepts it. Outside a git repository there is no baseline and no guard. Parallel steps that share one checkout see each other's changes, so a finding can come from a step running alongside; the question says what changed, not who changed it.
+
+When the workflow finishes, its last reply lists what the result rests on beyond checks written at planning: steps added mid-run (by a report's `newTasks` or by `add_step`, so their checks were written late), steps done without a check, and a goal without a goal check command.
 
 Checks run with `CI=true` in their environment, so test runners such as `node --test`, vitest and jest run once instead of starting watch mode. They run in their own process group, so cancelling a run kills everything a check started. If the step's directory doesn't exist, the check fails with a message that says so.
 
@@ -241,7 +254,7 @@ The concern: could the AI change the graph to cut corners and skip work?
 
 Code enforces:
 
-- A step completes only through a `done` report for its current attempt and a passing check, run by the server.
+- A step completes only through a `done` report for its current attempt and a passing check, run by the server, and without changes since the attempt started that weaken a check (§3); those go to the user.
 - The goal check command can't be changed after planning.
 - The workflow is done only when every node is complete, including the goal step.
 - A report can only add work: new steps, and new waits for its own step or for the steps that waited for it. It can't remove, complete or edit other steps.
@@ -251,7 +264,7 @@ Code trusts the model for the following. The goal step re-checks the result.
 
 - Running each step as its own subagent and passing its report on unchanged. The main agent could write a report itself; the check still runs, and the skill and every reply forbid it.
 - The plan. The main agent writes the steps and their checks, and a weak check is a weak gate.
-- Not weakening tests or checks. The step prompt forbids it.
+- Not weakening tests or checks in ways the guard doesn't recognize, such as loosening an assertion. The step prompt forbids it; the guard catches skip markers, deleted tests and edits to what a check runs.
 - Not editing `.copilot/workflows/` or calling work-graph tools from a step. The prompt forbids it, but nothing technically prevents it. An edit made during a run is overwritten by the next write.
 - Asking the user before `answer`, especially before replacing a check. Code doesn't enforce it; it shows every answer and check change to the user (§6).
 
@@ -310,6 +323,7 @@ Limitations:
 - The main agent can answer a step's question, or replace its check, without asking the user. The user sees every change, but nothing prevents it.
 - Step subagents' permission requests reach the session like the main agent's own, one per shell command.
 - Checks have no timeout.
+- The check guard is pattern-based: it misses a loosened assertion, and can flag an intended change (the user then accepts it).
 - A goal step that keeps finding different work has no round limit; only a repeated request asks the user.
 - Workflows don't resume on their own in a new session; the hook only mentions them.
 - Steps run at least once: an interrupted step runs again, so instructions should be safe to repeat.

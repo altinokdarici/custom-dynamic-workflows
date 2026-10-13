@@ -191,3 +191,49 @@ test("short summaries are passed on whole", async (t) => {
   assert.match(goal.prompt, /all good/);
   assert.doesNotMatch(goal.prompt, /shortened/);
 });
+
+test("a done step whose changes weaken a check goes to the user; the answer reruns it from a new baseline", async (t) => {
+  const cwd = await tempRoot(t);
+  const baselines: string[] = [];
+  const weakened = ["added a test skip marker in test/a.test.ts: it.skip(\"adds\")"];
+  const guard = {
+    baseline: async (_root: string, check: string | undefined) => {
+      baselines.push(`${check}`);
+      return { dir: cwd, commit: `c${baselines.length}` };
+    },
+    weakening: async (baseline: { commit: string }, checks: (string | undefined)[]) => {
+      assert.deepEqual(checks, ["npm test", "npm run e2e"]);
+      return baseline.commit === "c1" ? weakened : [];
+    },
+  };
+  const host = new Host({ check: fakeCheck().check, guard, env: {} });
+  const text = await host.plan({ cwd, goal: "G", concurrency: 1, tasks: [task("a", { check: "npm test" })], goalCheck: "npm run e2e" });
+  const workflowId = launches(text)[0]!.workflowId;
+
+  const asked = await host.report({ cwd, workflowId, stepId: "a", attempt: 1, report: done("x") });
+  assert.match(asked, /needs the user/);
+  assert.match(asked, /reported done and its check passed, but since it started:\n- added a test skip marker in test\/a\.test\.ts/);
+
+  const answered = await host.answer({ cwd, workflowId, nodeId: "a", answer: "Intended: that test is flaky upstream." });
+  assert.deepEqual(launches(answered).map((l) => `${l.stepId}#${l.attempt}`), ["a#2"]);
+  assert.match(await host.report({ cwd, workflowId, stepId: "a", attempt: 2, report: done("x") }), /done, and its check passed/);
+  assert.deepEqual(baselines, ["npm test", "npm test", "npm run e2e"]);
+});
+
+test("the finished workflow lists what its success rests on beyond checks written at planning", async (t) => {
+  const cwd = await tempRoot(t);
+  const host = new Host({ check: fakeCheck().check, env: {} });
+  const text = await host.plan({ cwd, goal: "G", concurrency: 1, tasks: [task("a", { check: "npm test" })] });
+  const workflowId = launches(text)[0]!.workflowId;
+  await host.addTask({ cwd, workflowId, task: task("docs") });
+  const report = JSON.stringify({ status: "done", summary: "x", newTasks: [task("fix", { check: "npm test -- fix" })] });
+  await host.report({ cwd, workflowId, stepId: "a", attempt: 1, report });
+  await host.report({ cwd, workflowId, stepId: "docs", attempt: 1, report: done("x") });
+  assert.match(await host.status({ cwd, workflowId }), /- \[in-progress\] fix: Step fix \(added by a\)/);
+  await host.report({ cwd, workflowId, stepId: "fix", attempt: 1, report: done("x") });
+  const finished = await host.report({ cwd, workflowId, stepId: "goal", attempt: 1, report: done("met") });
+  assert.match(finished, /is done/);
+  assert.match(finished, /Added mid-run, so their checks were written then, not at planning: docs \(with add_step\), fix \(by a\)\./);
+  assert.match(finished, /Done without a check, on their agent's word: docs\./);
+  assert.match(finished, /The goal had no goal check command/);
+});

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { INBOX_ENV, publishCanvas } from "./canvas.ts";
 import { runCheck } from "./check.ts";
+import { findWeakening, takeBaseline, type Baseline } from "./guard.ts";
 import { InputError, optionalText, parseOutcome, parseTask, parseTasks, record, text } from "./parse.ts";
 import { buildPrompt } from "./prompt.ts";
 import { loadWorkflowFiles } from "./store.ts";
@@ -11,9 +12,16 @@ import { Workflow, type Applied } from "./workflow.ts";
 
 export type CheckFn = (command: string, root: string) => Promise<CheckResult>;
 
+export interface Guard {
+  baseline(root: string, check: string | undefined): Promise<Baseline | undefined>;
+  weakening(baseline: Baseline, checks: (string | undefined)[]): Promise<string[]>;
+}
+
 export interface HostOptions {
   /** Runs a step's check from the project root. Defaults to runCheck. */
   check?: CheckFn;
+  /** Spots changes that weaken checks. Defaults to the git-based guard. */
+  guard?: Guard;
   /** Environment that says where to show the workflow canvas. Defaults to process.env. */
   env?: NodeJS.ProcessEnv;
 }
@@ -36,11 +44,13 @@ const ASK = `Ask the user each question (with the ask_user tool if you have it) 
  */
 export class Host {
   readonly #check: CheckFn;
+  readonly #guard: Guard;
   readonly #env: NodeJS.ProcessEnv;
   readonly #queues = new Map<string, Promise<unknown>>();
 
   constructor(options: HostOptions = {}) {
     this.#check = options.check ?? runCheck;
+    this.#guard = options.guard ?? { baseline: takeBaseline, weakening: findWeakening };
     this.#env = options.env ?? process.env;
   }
 
@@ -117,18 +127,21 @@ export class Host {
       parsed = { error: error.message };
     }
 
-    const command = await this.#serial(root, async () => {
+    const plan = await this.#serial(root, async () => {
       const wf = await load(root, id);
       current(wf, stepId, attempt as number);
-      return "outcome" in parsed ? wf.checkFor(stepId, parsed.outcome) : undefined;
+      if (!("outcome" in parsed) || !wf.completes(stepId, parsed.outcome)) return undefined;
+      return { command: wf.checkFor(stepId, parsed.outcome), baseline: wf.node(stepId).data.baseline, checks: wf.guardedChecks(stepId) };
     });
     // Outside the queue: a slow check doesn't hold up other calls.
-    const check = command === undefined ? undefined : await this.#check(command, root);
+    const check = plan?.command === undefined ? undefined : await this.#check(plan.command, root);
+    const weakening =
+      plan?.baseline && (!check || check.ok) ? await this.#guard.weakening(plan.baseline, plan.checks).catch(() => []) : [];
 
     return this.#serial(root, async () => {
       const wf = await load(root, id);
       current(wf, stepId, attempt as number);
-      const applied = "outcome" in parsed ? wf.apply(stepId, parsed.outcome, check) : wf.retryOrAsk(stepId, parsed.error);
+      const applied = "outcome" in parsed ? wf.apply(stepId, parsed.outcome, check, weakening) : wf.retryOrAsk(stepId, parsed.error);
       const lead = `Step "${stepId}" (attempt ${attempt}): ${describe(wf, stepId, applied, check)}`;
       return `${lead}\n\n${await this.#advance(wf)}`;
     });
@@ -166,6 +179,9 @@ export class Host {
       if (!node) break;
       started.push(node.id);
     }
+    for (const stepId of started) {
+      wf.setBaseline(stepId, await this.#guard.baseline(wf.root, wf.node(stepId).data.check).catch(() => undefined));
+    }
     // Built after every step started, so each prompt lists the others as running.
     const launches: Launch[] = started.map((stepId) => ({
       stepId,
@@ -191,6 +207,8 @@ export function nextText(wf: Workflow, launches: Launch[]): string {
   if (wf.graph.isComplete) {
     const changes = wf.changes();
     const lines = [`Workflow ${wf.id} is done: all ${wf.graph.size} steps finished and the goal check passed.`];
+    const caveats = wf.caveats();
+    if (caveats.length) lines.push("What this rests on beyond checks written at planning (tell the user):", ...caveats.map((c) => `- ${c}`));
     if (changes.length) lines.push("Answers and check changes (tell the user):", ...changes.map((c) => `- ${c}`));
     return lines.join("\n");
   }

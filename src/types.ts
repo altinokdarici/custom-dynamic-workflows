@@ -1,4 +1,5 @@
 import type { GraphSnapshot } from "@altinok/p-graph";
+import type { Baseline } from "./guard.ts";
 
 /** What the planner writes for a step. */
 export interface NodeSpec {
@@ -19,6 +20,10 @@ export interface NodeData extends NodeSpec {
   answer?: string;
   /** Every answer given to this step, and check changes made with them. */
   history?: string[];
+  /** Who added the step after planning: a step id, or "add_step". Its check was written mid-run. */
+  addedBy?: string;
+  /** The git state the current attempt started from, to spot changes that weaken checks. */
+  baseline?: Baseline;
 }
 
 export interface EdgeData {
