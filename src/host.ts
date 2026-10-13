@@ -25,11 +25,11 @@ export interface Launch {
   prompt: string;
 }
 
-const LAUNCH = `Launch each step below now as its own background general-purpose subagent (in Copilot CLI: the \`task\` tool, agent_type "general-purpose", mode "background"; in Claude Code: the Agent tool, subagent_type "general-purpose", run_in_background true), passing the text inside <step-prompt> exactly as written. Do not do the steps yourself. When a subagent finishes, call dw_report with the workflowId, its stepId and attempt, and the subagent's final message.`;
-const ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to dw_answer. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
+const LAUNCH = `Launch each step below now as its own background general-purpose subagent (in Copilot CLI: the \`task\` tool, agent_type "general-purpose", mode "background"; in Claude Code: the Agent tool, subagent_type "general-purpose", run_in_background true), passing the text inside <step-prompt> exactly as written. Do not do the steps yourself. When a subagent finishes, call report with the workflowId, its stepId and attempt, and the subagent's final message.`;
+const ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to the answer tool. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
 
 /**
- * Implements the dw_* tools. Every call reads the workflow from disk and
+ * Implements the work-graph tools. Every call reads the workflow from disk and
  * writes it back before returning, so any session (and any number of
  * sessions) can drive a workflow. Calls for one project run one at a time;
  * checks run in between, so a slow check doesn't hold up other reports.
@@ -227,7 +227,7 @@ export function stateOf(wf: Workflow): string {
   if (out) parts.push(`${out} step(s) handed out to subagents`);
   const asking = wf.questions().length;
   if (asking) parts.push(`${asking} step(s) wait for the user's answer`);
-  if (!out && wf.graph.count("ready")) parts.push("paused (dw_run resumes it)");
+  if (!out && wf.graph.count("ready")) parts.push("paused (the resume tool continues it)");
   return parts.join("; ") || "stuck";
 }
 
@@ -255,7 +255,7 @@ async function load(root: string, id: string): Promise<Workflow> {
   return wf;
 }
 
-/** Rejects a report for an attempt that is no longer running, such as one requeued by dw_run. */
+/** Rejects a report for an attempt that is no longer running, such as one requeued by the resume tool. */
 function current(wf: Workflow, stepId: string, attempt: number): void {
   const node = wf.node(stepId);
   if (!wf.inFlight().some((n) => n.id === stepId) || node.data.attempts !== attempt) {

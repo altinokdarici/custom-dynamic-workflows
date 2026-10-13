@@ -21255,6 +21255,43 @@ var StdioServerTransport = class {
   }
 };
 
+// package.json
+var package_default = {
+  name: "work-graph",
+  version: "0.6.0",
+  private: true,
+  type: "module",
+  description: "Copilot CLI and Claude Code plugin that turns a task into a graph of steps (p-graph) and runs every step to completion.",
+  license: "MIT",
+  author: "Altinok Darici",
+  homepage: "https://github.com/altinokdarici/work-graph#readme",
+  repository: {
+    type: "git",
+    url: "git+https://github.com/altinokdarici/work-graph.git"
+  },
+  bugs: {
+    url: "https://github.com/altinokdarici/work-graph/issues"
+  },
+  engines: {
+    node: ">=24"
+  },
+  scripts: {
+    build: "esbuild src/mcp.ts src/hook.ts --bundle --platform=node --format=esm --target=node24 --outdir=dist --out-extension:.js=.mjs",
+    typecheck: "tsc --noEmit",
+    test: 'node --test "test/**/*.test.ts"',
+    "check:versions": "node scripts/check-versions.mjs"
+  },
+  dependencies: {
+    "@altinok/p-graph": "^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.32.1"
+  },
+  devDependencies: {
+    "@types/node": "^24.0.0",
+    esbuild: "^0.28.2",
+    typescript: "^7.0.2"
+  }
+};
+
 // src/host.ts
 import { execFileSync } from "node:child_process";
 import { isAbsolute } from "node:path";
@@ -22788,7 +22825,7 @@ var GOAL_INSTRUCTIONS = `Every other step reports done. Check that the goal abov
 - If anything is missing or wrong, report blocked and describe the fixes as newTasks.`;
 var RULES = `## Rules
 - Do this step only. Other steps take care of the rest of the goal.
-- Do not call any dw_* tool and do not edit .copilot/workflows; the workflow owns them.
+- Do not call any work-graph tools and do not edit .copilot/workflows; the workflow owns them.
 - Never weaken, skip or delete checks or tests to make them pass.`;
 var OUTCOME_SCHEMA = {
   type: "object",
@@ -22897,8 +22934,8 @@ Steps marked "running now" run at the same time as this one, possibly in the sam
 }
 
 // src/host.ts
-var LAUNCH = `Launch each step below now as its own background general-purpose subagent (in Copilot CLI: the \`task\` tool, agent_type "general-purpose", mode "background"; in Claude Code: the Agent tool, subagent_type "general-purpose", run_in_background true), passing the text inside <step-prompt> exactly as written. Do not do the steps yourself. When a subagent finishes, call dw_report with the workflowId, its stepId and attempt, and the subagent's final message.`;
-var ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to dw_answer. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
+var LAUNCH = `Launch each step below now as its own background general-purpose subagent (in Copilot CLI: the \`task\` tool, agent_type "general-purpose", mode "background"; in Claude Code: the Agent tool, subagent_type "general-purpose", run_in_background true), passing the text inside <step-prompt> exactly as written. Do not do the steps yourself. When a subagent finishes, call report with the workflowId, its stepId and attempt, and the subagent's final message.`;
+var ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to the answer tool. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
 var Host = class {
   #check;
   #env;
@@ -23090,7 +23127,7 @@ function stateOf(wf) {
   if (out) parts.push(`${out} step(s) handed out to subagents`);
   const asking = wf.questions().length;
   if (asking) parts.push(`${asking} step(s) wait for the user's answer`);
-  if (!out && wf.graph.count("ready")) parts.push("paused (dw_run resumes it)");
+  if (!out && wf.graph.count("ready")) parts.push("paused (the resume tool continues it)");
   return parts.join("; ") || "stuck";
 }
 async function loadAll(root) {
@@ -23192,13 +23229,13 @@ var CWD = {
   type: "string",
   description: "Absolute path of your current working directory. Workflows belong to its git repository."
 };
-var WORKFLOW_ID = { type: "string", description: "Workflow id returned by dw_plan." };
+var WORKFLOW_ID = { type: "string", description: "Workflow id returned by the plan tool." };
 var LOOP = "Its reply lists the steps to launch as subagents and what to do next.";
 var host = new Host();
 var tools = [
   {
-    name: "dw_plan",
-    description: `Create a dynamic workflow: a dependency graph of steps that runs until every step is done and a final goal check passes. You run each step as its own subagent; checks run in code. Use for work that splits into several stage-sized steps (see the dynamic-workflow skill). ${LOOP}`,
+    name: "plan",
+    description: `Create a workflow: a dependency graph of steps that runs until every step is done and a final goal check passes. You run each step as its own subagent; checks run in code. Use for work that splits into several stage-sized steps (see the work-graph skill). ${LOOP}`,
     inputSchema: {
       type: "object",
       required: ["cwd", "goal", "concurrency", "tasks"],
@@ -23219,7 +23256,7 @@ var tools = [
     handler: (args) => host.plan(args)
   },
   {
-    name: "dw_report",
+    name: "report",
     description: `Report a finished step subagent: pass its final message unchanged. The workflow reads the JSON report in it, runs the step's check, and records the result; a failing check sends the step back. ${LOOP}`,
     inputSchema: {
       type: "object",
@@ -23235,7 +23272,7 @@ var tools = [
     handler: (args) => host.report(args)
   },
   {
-    name: "dw_next",
+    name: "next",
     description: `Show what to do next for a workflow: steps to launch, reports still expected, questions for the user. ${LOOP}`,
     inputSchema: {
       type: "object",
@@ -23245,7 +23282,7 @@ var tools = [
     handler: (args) => host.next(args)
   },
   {
-    name: "dw_answer",
+    name: "answer",
     description: `Pass the user's answer to a question a step asked. If the step's check is wrong, pass a corrected \`check\` to replace it (not for the goal check); tell the user when you do. The step then runs again with the answer. Every answer and check change is kept and listed when the workflow finishes. ${LOOP}`,
     inputSchema: {
       type: "object",
@@ -23261,7 +23298,7 @@ var tools = [
     handler: (args) => host.answer(args)
   },
   {
-    name: "dw_add_task",
+    name: "add_step",
     description: `Add a step to a workflow. \`blocks\` lists existing steps that have not started yet and must wait for the new one. ${LOOP}`,
     inputSchema: {
       type: "object",
@@ -23276,7 +23313,7 @@ var tools = [
     handler: (args) => host.addTask(args)
   },
   {
-    name: "dw_run",
+    name: "resume",
     description: `Resume a workflow whose steps were handed to subagents that are gone (another session, a restart): those steps run again. Optionally change its concurrency. Never use it while this session's subagents still run steps. ${LOOP}`,
     inputSchema: {
       type: "object",
@@ -23286,7 +23323,7 @@ var tools = [
     handler: (args) => host.run(args)
   },
   {
-    name: "dw_status",
+    name: "status",
     description: "Show a workflow's steps, results, errors and open questions, or list the repository's workflows when workflowId is omitted.",
     inputSchema: {
       type: "object",
@@ -23296,7 +23333,7 @@ var tools = [
     handler: (args) => host.status(args)
   },
   {
-    name: "dw_view",
+    name: "view",
     description: `Get a workflow's step graph, colored by status, as an HTML page for a canvas. If you have a canvas_show tool, pass the page to it unchanged as kind "html" with the name and title given.`,
     inputSchema: {
       type: "object",
@@ -23306,7 +23343,7 @@ var tools = [
     handler: (args) => host.view(args)
   }
 ];
-var server = new Server({ name: "dynamic-workflows", version: "0.4.1" }, { capabilities: { tools: {} } });
+var server = new Server({ name: "work-graph", version: package_default.version }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))
 }));

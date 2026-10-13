@@ -80,8 +80,8 @@ export interface Simulated {
 }
 
 /**
- * Plays the main agent: resumes the workflow with dw_run, runs every launched
- * step with `agent` concurrently, reports each result with dw_report, and
+ * Plays the main agent: resumes the workflow with the resume tool, runs every launched
+ * step with `agent` concurrently, reports each result with the report tool, and
  * launches what the replies hand out, until nothing is running.
  */
 export async function runPass(

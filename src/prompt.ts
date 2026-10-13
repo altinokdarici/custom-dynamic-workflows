@@ -11,7 +11,7 @@ const GOAL_INSTRUCTIONS = `Every other step reports done. Check that the goal ab
 
 const RULES = `## Rules
 - Do this step only. Other steps take care of the rest of the goal.
-- Do not call any dw_* tool and do not edit .copilot/workflows; the workflow owns them.
+- Do not call any work-graph tools and do not edit .copilot/workflows; the workflow owns them.
 - Never weaken, skip or delete checks or tests to make them pass.`;
 
 

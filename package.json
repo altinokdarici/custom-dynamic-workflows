@@ -1,18 +1,18 @@
 {
-  "name": "custom-dynamic-workflows",
-  "version": "0.5.0",
+  "name": "work-graph",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "Copilot CLI and Claude Code plugin that turns a task into a graph of steps (p-graph) and runs every step to completion.",
   "license": "MIT",
   "author": "Altinok Darici",
-  "homepage": "https://github.com/altinokdarici/custom-dynamic-workflows#readme",
+  "homepage": "https://github.com/altinokdarici/work-graph#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/altinokdarici/custom-dynamic-workflows.git"
+    "url": "git+https://github.com/altinokdarici/work-graph.git"
   },
   "bugs": {
-    "url": "https://github.com/altinokdarici/custom-dynamic-workflows/issues"
+    "url": "https://github.com/altinokdarici/work-graph/issues"
   },
   "engines": {
     "node": ">=24"
