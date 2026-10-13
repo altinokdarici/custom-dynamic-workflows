@@ -14,7 +14,7 @@ copilot ─ dw_plan ─▶  migrate-commit-helper ─┐
                       migrate-test-writer ───┘
 ```
 
-The graph is a [p-graph](https://github.com/altinokdarici/p-graph): a dynamic priority graph with labelled edges. Steps can add steps while it runs.
+The graph is a [p-graph](https://github.com/altinokdarici/p-graph) ([`@altinok/p-graph`](https://www.npmjs.com/package/@altinok/p-graph) on npm): a dynamic priority graph with labelled edges. Steps can add steps while it runs.
 
 ## Guarantees
 
@@ -122,6 +122,10 @@ The bundles are committed, because the plugin runs them directly (`.mcp.json`, `
 | `src/mcp.ts` | The stdio MCP server: tool schemas and descriptions. |
 | `src/hook.ts` | The `UserPromptSubmit` hook: open questions, and workflows with work left. |
 | `src/store.ts`, `src/check.ts` | JSON-file store and the check runner. |
+
+### Releasing
+
+Bump the version in `package.json`, `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` (`npm run check:versions` and CI fail if they differ), add a `CHANGELOG.md` entry, rebuild, merge, then tag `v<version>` and publish a GitHub Release. The plugin installs from the repo, so nothing is published to npm.
 
 ## Tried it
 
