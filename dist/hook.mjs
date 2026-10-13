@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 // src/workflow.ts
 import { randomBytes } from "node:crypto";
 
-// node_modules/@altinokdarici/p-graph/dist/errors.js
+// node_modules/@altinok/p-graph/lib/errors.js
 var PriorityGraphError = class extends Error {
   constructor(message) {
     super(message);
@@ -67,7 +67,7 @@ var StoreError = class extends PriorityGraphError {
   }
 };
 
-// node_modules/@altinokdarici/p-graph/dist/heap.js
+// node_modules/@altinok/p-graph/lib/heap.js
 var IndexedHeap = class {
   #items = [];
   #before;
@@ -173,7 +173,7 @@ var IndexedHeap = class {
   }
 };
 
-// node_modules/@altinokdarici/p-graph/dist/priority-graph.js
+// node_modules/@altinok/p-graph/lib/priority-graph.js
 var NODE_STATES = ["pending", "ready", "in-progress", "completed"];
 var before = (a, b) => a.effectivePriority > b.effectivePriority || a.effectivePriority === b.effectivePriority && a.order < b.order;
 var PriorityGraph = class _PriorityGraph {
@@ -828,7 +828,7 @@ function isPromiseLike(value) {
   return (typeof value === "object" || typeof value === "function") && value !== null && typeof value.then === "function";
 }
 
-// node_modules/@altinokdarici/p-graph/dist/apply-changes.js
+// node_modules/@altinok/p-graph/lib/apply-changes.js
 function applyChanges(snapshot, changes) {
   for (const change of changes) {
     switch (change.type) {
@@ -1401,7 +1401,12 @@ ${lines.join("\n")}
 Mention them to the user. If the user wants to continue one, call dw_run (it requeues steps whose subagents are gone). Never resume without the user asking.`
     );
   }
-  if (parts.length) process.stdout.write(JSON.stringify({ additionalContext: parts.join("\n\n") }));
+  if (parts.length) {
+    const additionalContext = parts.join("\n\n");
+    process.stdout.write(
+      JSON.stringify({ additionalContext, hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } })
+    );
+  }
 }
 function firstTime(session, root) {
   const dir = join2(tmpdir(), "dynamic-workflows-hook");

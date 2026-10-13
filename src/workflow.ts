@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { PriorityGraph, type GraphNode } from "@altinokdarici/p-graph";
+import { PriorityGraph, type GraphNode } from "@altinok/p-graph";
 import { InputError } from "./parse.ts";
 import { FileStore, workflowPath } from "./store.ts";
 import { normalizeError, slug } from "./text.ts";

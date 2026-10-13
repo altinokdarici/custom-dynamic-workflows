@@ -21266,7 +21266,7 @@ import { join as join2 } from "node:path";
 // src/workflow.ts
 import { randomBytes } from "node:crypto";
 
-// node_modules/@altinokdarici/p-graph/dist/errors.js
+// node_modules/@altinok/p-graph/lib/errors.js
 var PriorityGraphError = class extends Error {
   constructor(message) {
     super(message);
@@ -21323,7 +21323,7 @@ var StoreError = class extends PriorityGraphError {
   }
 };
 
-// node_modules/@altinokdarici/p-graph/dist/heap.js
+// node_modules/@altinok/p-graph/lib/heap.js
 var IndexedHeap = class {
   #items = [];
   #before;
@@ -21429,7 +21429,7 @@ var IndexedHeap = class {
   }
 };
 
-// node_modules/@altinokdarici/p-graph/dist/priority-graph.js
+// node_modules/@altinok/p-graph/lib/priority-graph.js
 var NODE_STATES = ["pending", "ready", "in-progress", "completed"];
 var before = (a, b) => a.effectivePriority > b.effectivePriority || a.effectivePriority === b.effectivePriority && a.order < b.order;
 var PriorityGraph = class _PriorityGraph {
@@ -22084,7 +22084,7 @@ function isPromiseLike(value) {
   return (typeof value === "object" || typeof value === "function") && value !== null && typeof value.then === "function";
 }
 
-// node_modules/@altinokdarici/p-graph/dist/apply-changes.js
+// node_modules/@altinok/p-graph/lib/apply-changes.js
 function applyChanges(snapshot, changes) {
   for (const change of changes) {
     switch (change.type) {
@@ -22897,7 +22897,7 @@ Steps marked "running now" run at the same time as this one, possibly in the sam
 }
 
 // src/host.ts
-var LAUNCH = `Launch each step below now as its own background \`task\` subagent (agent_type "general-purpose"), passing the text inside <step-prompt> exactly as written. Do not do the steps yourself. When a subagent finishes, call dw_report with the workflowId, its stepId and attempt, and the subagent's final message.`;
+var LAUNCH = `Launch each step below now as its own background general-purpose subagent (in Copilot CLI: the \`task\` tool, agent_type "general-purpose", mode "background"; in Claude Code: the Agent tool, subagent_type "general-purpose", run_in_background true), passing the text inside <step-prompt> exactly as written. Do not do the steps yourself. When a subagent finishes, call dw_report with the workflowId, its stepId and attempt, and the subagent's final message.`;
 var ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to dw_answer. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
 var Host = class {
   #check;

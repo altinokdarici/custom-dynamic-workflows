@@ -5,7 +5,7 @@
     "url": "https://github.com/altinokdarici"
   },
   "metadata": {
-    "description": "Dynamic workflow orchestration plugins for Copilot CLI.",
+    "description": "Dynamic workflow orchestration plugins for Copilot CLI and Claude Code.",
     "version": "1.0.0"
   },
   "plugins": [
@@ -13,7 +13,7 @@
       "name": "custom-dynamic-workflows",
       "source": "./",
       "description": "Turns a task you describe in plain language into a graph of steps and runs every step to completion: parallel where it can, checked by code, asking you only when it is stuck.",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "author": {
         "name": "Altinok Darici"
       },
@@ -21,7 +21,8 @@
         "workflow",
         "orchestration",
         "priority-graph",
-        "copilot-cli"
+        "copilot-cli",
+        "claude-code"
       ],
       "category": "productivity"
     }

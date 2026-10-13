@@ -1,4 +1,4 @@
-import type { GraphSnapshot } from "@altinokdarici/p-graph";
+import type { GraphSnapshot } from "@altinok/p-graph";
 
 /** What the planner writes for a step. */
 export interface NodeSpec {

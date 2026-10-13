@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { applyChanges, type GraphChange, type GraphStore } from "@altinokdarici/p-graph";
+import { applyChanges, type GraphChange, type GraphStore } from "@altinok/p-graph";
 import type { EdgeData, NodeData, WorkflowFile } from "./types.ts";
 
 export const WORKFLOWS_DIR = join(".copilot", "workflows");
