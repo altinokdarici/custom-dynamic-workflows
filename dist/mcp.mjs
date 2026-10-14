@@ -2983,7 +2983,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve.call(this, root, ref);
+      let _sch = resolve2.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a2 = root.localRefs) === null || _a2 === void 0 ? void 0 : _a2[ref];
         const { schemaId } = this.opts;
@@ -3010,7 +3010,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve(root, ref) {
+    function resolve2(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3840,7 +3840,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve(baseURI, relativeURI, options) {
+    function resolve2(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -4209,7 +4209,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve,
+      resolve: resolve2,
       resolveComponent,
       equal,
       serialize,
@@ -20006,7 +20006,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -20023,7 +20023,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -20101,7 +20101,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve(parseResult.data);
+            resolve2(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -20363,12 +20363,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve, interval);
+      const timeoutId = setTimeout(resolve2, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -21244,12 +21244,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve();
+        resolve2();
       } else {
-        this._stdout.once("drain", resolve);
+        this._stdout.once("drain", resolve2);
       }
     });
   }
@@ -21258,7 +21258,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "work-graph",
-  version: "0.6.0",
+  version: "0.7.0",
   private: true,
   type: "module",
   description: "Copilot CLI and Claude Code plugin that turns a task into a graph of steps (p-graph) and runs every step to completion.",
@@ -22428,6 +22428,15 @@ var Workflow = class _Workflow {
     this.graph.setData(node.id, { ...node.data, attempts: node.data.attempts + 1 });
     return this.graph.get(node.id);
   }
+  /** Records the git state a handed-out step starts from. */
+  setBaseline(id, baseline) {
+    const { baseline: _old, ...data } = this.node(id).data;
+    this.graph.setData(id, baseline ? { ...data, baseline } : data);
+  }
+  /** Checks a step's changes must not weaken: its own and the goal's. */
+  guardedChecks(id) {
+    return [this.node(id).data.check, this.node(GOAL).data.check];
+  }
   /** Adds steps; `blocks` lists existing steps that must wait for them. Returns the new ids. */
   addTasks(tasks, blocks = []) {
     return this.#transact((g) => {
@@ -22439,25 +22448,32 @@ var Workflow = class _Workflow {
           throw new InputError(`Step "${id}" is ${state}; only steps that have not started can wait for new steps.`);
         }
       }
-      const ids = addTasks(g, tasks);
+      const ids = addTasks(g, tasks, { addedBy: "add_step" });
       for (const id of blocks) {
         if (g.get(id).state !== "in-progress") for (const added of ids) g.addDependency(id, added);
       }
       return ids;
     });
   }
+  /** Whether applying this report would complete the step (before its check and guard run). */
+  completes(id, outcome) {
+    return effectiveStatus(id, outcome) === "done" && !this.#unfinishedBeforeGoal(id).length;
+  }
   /** The check to run before `apply`, when the report would complete the step. */
   checkFor(id, outcome) {
-    if (effectiveStatus(id, outcome) !== "done" || this.#unfinishedBeforeGoal(id).length) return void 0;
-    return this.node(id).data.check;
+    return this.completes(id, outcome) ? this.node(id).data.check : void 0;
   }
   /** Steps added while the goal step ran that are not finished; the goal cannot complete before them. */
   #unfinishedBeforeGoal(id) {
     if (id !== GOAL) return [];
     return [...this.graph.nodes()].filter((n) => n.id !== GOAL && n.state !== "completed").map((n) => n.id);
   }
-  /** Applies a step's report. `check` is the result of `checkFor`'s command. */
-  apply(id, outcome, check2) {
+  /**
+   * Applies a step's report. `check` is the result of `checkFor`'s command;
+   * `weakening` lists changes since the attempt started that can make checks
+   * pass without the work (see guard.ts). Those go to the user.
+   */
+  apply(id, outcome, check2, weakening = []) {
     this.#requireInProgress(id);
     switch (effectiveStatus(id, outcome)) {
       case "done": {
@@ -22471,8 +22487,17 @@ var Workflow = class _Workflow {
         }
         if (check2 && !check2.ok) return this.retryOrAsk(id, `The check failed:
 ${check2.output}`);
+        if (weakening.length) {
+          this.#ask(
+            id,
+            `This step reported done${check2 ? " and its check passed" : ""}, but since it started:
+${weakening.map((w) => `- ${w}`).join("\n")}
+These can make a check pass without the work. If they are intended, say so: the step runs once more and accepts them. Otherwise say what it should do instead.`
+          );
+          return "question";
+        }
         return this.#tryTransact(id, (g) => {
-          const ids = addTasks(g, outcome.newTasks ?? [], { reuseUnfinished: true, self: id });
+          const ids = addTasks(g, outcome.newTasks ?? [], { reuseUnfinished: true, self: id, addedBy: id });
           for (const dependent of g.dependentsOf(id)) {
             if (dependent === GOAL) continue;
             for (const added of ids) g.addDependency(dependent, added, { label: `found by ${id}` });
@@ -22505,7 +22530,7 @@ How should it continue?`
         return this.#tryTransact(id, (g) => {
           g.requeue(id);
           if (requested !== void 0) g.setData(id, { ...g.get(id).data, lastRequested: requested });
-          for (const added of addTasks(g, outcome.newTasks, { reuseUnfinished: true, self: id })) {
+          for (const added of addTasks(g, outcome.newTasks, { reuseUnfinished: true, self: id, addedBy: id })) {
             g.addDependency(id, added, { label: "needed first" });
           }
           for (const dep of late2) g.addDependency(id, dep, { label: "added while the goal ran" });
@@ -22564,6 +22589,24 @@ How should it continue?`);
     this.graph.requeue(id);
     return entry;
   }
+  /**
+   * What the finished workflow's success rests on besides checks written at
+   * planning: steps added mid-run, steps done without a check, and a goal
+   * without a goal check command.
+   */
+  caveats() {
+    const nodes = [...this.graph.nodes()].filter((n) => n.id !== GOAL);
+    const lines = [];
+    const added = nodes.filter((n) => n.data.addedBy);
+    if (added.length) {
+      const list = added.map((n) => `${n.id} (${n.data.addedBy === "add_step" ? "with add_step" : `by ${n.data.addedBy}`})`);
+      lines.push(`Added mid-run, so their checks were written then, not at planning: ${list.join(", ")}.`);
+    }
+    const unchecked = nodes.filter((n) => !n.data.check).map((n) => n.id);
+    if (unchecked.length) lines.push(`Done without a check, on their agent's word: ${unchecked.join(", ")}.`);
+    if (!this.node(GOAL).data.check) lines.push("The goal had no goal check command; the goal step's agent judged it.");
+    return lines;
+  }
   /** Every answer and check change, per step. */
   changes() {
     return [...this.graph.nodes()].flatMap((node) => (node.data.history ?? []).map((entry) => `${node.id}: ${entry}`));
@@ -22585,6 +22628,7 @@ How should it continue?`);
     const waiting = this.isWaiting(node);
     const state = waiting ? "waiting for user" : node.state;
     let line = `- [${state}] ${node.id}: ${d.title}`;
+    if (d.addedBy) line += ` (added ${d.addedBy === "add_step" ? "with add_step" : `by ${d.addedBy}`})`;
     if (d.attempts > 1) line += ` (attempt ${d.attempts})`;
     if (node.state === "pending") {
       const open = node.dependencies.filter((dep) => this.graph.get(dep)?.state !== "completed");
@@ -22626,7 +22670,7 @@ function effectiveStatus(id, outcome) {
 function requestedTitles(tasks) {
   return tasks.map((t) => t.title.replace(/\s+/g, " ").trim().toLowerCase()).sort();
 }
-function addTasks(g, tasks, { exactIds = false, reuseUnfinished = false, self = "" } = {}) {
+function addTasks(g, tasks, { exactIds = false, reuseUnfinished = false, self = "", addedBy = "" } = {}) {
   const keys = tasks.map((task) => slug(task.id));
   const ids = /* @__PURE__ */ new Map();
   const reused = /* @__PURE__ */ new Set();
@@ -22651,6 +22695,7 @@ function addTasks(g, tasks, { exactIds = false, reuseUnfinished = false, self = 
     if (reused.has(ids.get(keys[i]))) continue;
     const data = { title: task.title, instructions: task.instructions, attempts: 0 };
     if (task.check) data.check = task.check;
+    if (addedBy) data.addedBy = addedBy;
     g.addNode(ids.get(keys[i]), data, task.priority === void 0 ? {} : { priority: task.priority });
   }
   for (const [i, task] of tasks.entries()) {
@@ -22785,7 +22830,7 @@ function runCheck(command, cwd, signal) {
   if (!existsSync(cwd)) {
     return Promise.resolve({ ok: false, output: `The check directory does not exist: ${cwd}` });
   }
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     signal?.throwIfAborted();
     let output = "";
     const child = spawn(command, { cwd, shell: true, env: { ...process.env, CI: "true" }, detached: GROUP, stdio: ["ignore", "pipe", "pipe"] });
@@ -22804,17 +22849,130 @@ function runCheck(command, cwd, signal) {
     child.stderr.on("data", collect);
     child.on("error", (error2) => {
       signal?.removeEventListener("abort", kill);
-      resolve({ ok: false, output: `Could not run the check: ${error2.message}` });
+      resolve2({ ok: false, output: `Could not run the check: ${error2.message}` });
     });
     child.on("close", (code, killedBy) => {
       signal?.removeEventListener("abort", kill);
       if (signal?.aborted) return reject(signal.reason);
       const status = code === 0 ? "" : `
 (exit ${code ?? killedBy})`;
-      resolve({ ok: code === 0, output: `$ ${command}
+      resolve2({ ok: code === 0, output: `$ ${command}
 ${output.trimEnd()}${status}` });
     });
   });
+}
+
+// src/guard.ts
+import { execFile } from "node:child_process";
+import { existsSync as existsSync2 } from "node:fs";
+import { readFile as readFile2 } from "node:fs/promises";
+import { join as join3, resolve } from "node:path";
+import { promisify } from "node:util";
+var git = promisify(execFile);
+var SKIP_MARKERS = [
+  /\b(?:it|test|describe|context|suite|bench)\.(?:skip|todo|only)\b/,
+  /\b(?:xit|xtest|xdescribe|xcontext)\s*\(/,
+  /\{\s*(?:skip|todo|only)\s*:\s*true\b/,
+  /\bt\.skip\s*\(/,
+  /@pytest\.mark\.(?:skip|skipif|xfail)\b/,
+  /@unittest\.skip/,
+  /\bpytest\.skip\s*\(/,
+  /@(?:Disabled|Ignore)\b/,
+  /#\[ignore\]/,
+  /\bt\.Skip(?:Now|f)?\s*\(/
+];
+var TEST_PATH = /(^|\/)(tests?|__tests__|specs?|evals?)\/|[._-](test|spec)\.[^/]+$|(^|\/)test_[^/]+\.py$/;
+function checkDir(root, check2) {
+  const cd = check2?.match(/^\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*&&/);
+  return cd ? resolve(root, cd[1].replace(/^["']|["']$/g, "")) : root;
+}
+async function gitOut(dir, args) {
+  const { stdout } = await git("git", args, { cwd: dir, maxBuffer: 64 * 1024 * 1024 });
+  return stdout;
+}
+async function takeBaseline(root, check2) {
+  const dir = checkDir(root, check2);
+  const from = existsSync2(dir) ? dir : root;
+  try {
+    const head = (await gitOut(from, ["rev-parse", "HEAD"])).trim();
+    const snapshot = from === dir ? (await gitOut(dir, ["stash", "create"]).catch(() => "")).trim() : "";
+    return { dir, commit: snapshot || head };
+  } catch {
+    return void 0;
+  }
+}
+async function findWeakening(baseline, checks) {
+  const { dir, commit } = baseline;
+  if (!existsSync2(dir)) return [];
+  let status;
+  let patch;
+  try {
+    status = await gitOut(dir, ["diff", "--no-renames", "--name-status", commit, "--", "."]);
+    patch = await gitOut(dir, ["diff", "--no-renames", "--no-color", "--no-ext-diff", "-U0", commit, "--", "."]);
+  } catch {
+    return [];
+  }
+  const findings = [];
+  const changed = /* @__PURE__ */ new Map();
+  for (const line of status.split("\n")) {
+    const [kind, path] = line.split("	");
+    if (kind && path) changed.set(path, kind);
+  }
+  for (const [path, kind] of changed) {
+    if (kind === "D" && TEST_PATH.test(path)) findings.push(`deleted test file ${path}`);
+  }
+  let file2 = "";
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("+++ ")) file2 = line.replace(/^\+\+\+ (b\/)?/, "");
+    else if (line.startsWith("+") && SKIP_MARKERS.some((marker) => marker.test(line))) {
+      findings.push(`added a test skip marker in ${file2}: ${clip3(line.slice(1).trim())}`);
+    }
+  }
+  const named = /* @__PURE__ */ new Set();
+  const scripts = /* @__PURE__ */ new Set();
+  for (const check2 of checks) {
+    if (!check2) continue;
+    for (const path of namedPaths(check2)) named.add(path);
+    for (const script of npmScripts(check2)) scripts.add(script);
+  }
+  for (const path of named) {
+    const kind = changed.get(path);
+    if (kind === "M" || kind === "D" || kind === "T") findings.push(`${kind === "D" ? "deleted" : "changed"} ${path}, which a check runs`);
+  }
+  if (scripts.size && changed.get("package.json") === "M") {
+    const before2 = await gitOut(dir, ["show", `${commit}:./package.json`]).then(scriptsOf, () => ({}));
+    const after = await readFile2(join3(dir, "package.json"), "utf8").then(scriptsOf, () => ({}));
+    for (const script of scripts) {
+      if (before2[script] !== after[script]) findings.push(`changed the npm script "${script}", which a check runs`);
+    }
+  }
+  return findings;
+}
+function namedPaths(check2) {
+  const command = check2.replace(/^\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*&&/, "");
+  return command.split(/[\s;&|()<>]+/).map((token) => token.replace(/^["']|["']$/g, "").replace(/^\.\//, "")).filter((token) => /^[\w.@-][\w./@-]*\.[A-Za-z0-9]+$/.test(token) && !token.startsWith("-") && !/^\d/.test(token));
+}
+var PACKAGE_MANAGER_COMMANDS = /* @__PURE__ */ new Set(["install", "i", "add", "remove", "ci", "exec", "dlx", "x", "create", "why", "list"]);
+function npmScripts(check2) {
+  const found = [];
+  for (const [, short, named] of check2.matchAll(/\bnpm\s+(?:(test|t|start)\b|run(?:-script)?\s+([\w:.-]+))/g)) {
+    found.push(named ?? (short === "t" ? "test" : short));
+  }
+  for (const [, name] of check2.matchAll(/\b(?:pnpm|yarn)\s+(?:run\s+)?([\w:.-]+)/g)) {
+    if (!PACKAGE_MANAGER_COMMANDS.has(name)) found.push(name);
+  }
+  return found;
+}
+function scriptsOf(text2) {
+  try {
+    const scripts = JSON.parse(text2)?.scripts;
+    return scripts && typeof scripts === "object" ? scripts : {};
+  } catch {
+    return {};
+  }
+}
+function clip3(text2, max = 160) {
+  return text2.length <= max ? text2 : `${text2.slice(0, max)}\u2026`;
 }
 
 // src/prompt.ts
@@ -22938,10 +23096,12 @@ var LAUNCH = `Launch each step below now as its own background general-purpose s
 var ASK = `Ask the user each question (with the ask_user tool if you have it) and pass their answer to the answer tool. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix.`;
 var Host = class {
   #check;
+  #guard;
   #env;
   #queues = /* @__PURE__ */ new Map();
   constructor(options = {}) {
     this.#check = options.check ?? runCheck;
+    this.#guard = options.guard ?? { baseline: takeBaseline, weakening: findWeakening };
     this.#env = options.env ?? process.env;
   }
   async plan(rawArgs) {
@@ -23017,16 +23177,18 @@ ${await this.#advance(wf)}`;
       if (!(error2 instanceof InputError)) throw error2;
       parsed = { error: error2.message };
     }
-    const command = await this.#serial(root, async () => {
+    const plan = await this.#serial(root, async () => {
       const wf = await load(root, id);
       current(wf, stepId, attempt);
-      return "outcome" in parsed ? wf.checkFor(stepId, parsed.outcome) : void 0;
+      if (!("outcome" in parsed) || !wf.completes(stepId, parsed.outcome)) return void 0;
+      return { command: wf.checkFor(stepId, parsed.outcome), baseline: wf.node(stepId).data.baseline, checks: wf.guardedChecks(stepId) };
     });
-    const check2 = command === void 0 ? void 0 : await this.#check(command, root);
+    const check2 = plan?.command === void 0 ? void 0 : await this.#check(plan.command, root);
+    const weakening = plan?.baseline && (!check2 || check2.ok) ? await this.#guard.weakening(plan.baseline, plan.checks).catch(() => []) : [];
     return this.#serial(root, async () => {
       const wf = await load(root, id);
       current(wf, stepId, attempt);
-      const applied = "outcome" in parsed ? wf.apply(stepId, parsed.outcome, check2) : wf.retryOrAsk(stepId, parsed.error);
+      const applied = "outcome" in parsed ? wf.apply(stepId, parsed.outcome, check2, weakening) : wf.retryOrAsk(stepId, parsed.error);
       const lead = `Step "${stepId}" (attempt ${attempt}): ${describe3(wf, stepId, applied, check2)}`;
       return `${lead}
 
@@ -23053,7 +23215,7 @@ ${wf.statusText()}`;
     return this.#serial(root, async () => {
       const wf = await load(root, id);
       const html = viewHtml(wf, stateOf(wf));
-      return `Show this with canvas_show: name "workflow-${wf.id}", title ${JSON.stringify(clip3(wf.goal, 80))}, kind "html", content:
+      return `Show this with canvas_show: name "workflow-${wf.id}", title ${JSON.stringify(clip4(wf.goal, 80))}, kind "html", content:
 ${html}`;
     });
   }
@@ -23064,6 +23226,9 @@ ${html}`;
       const node = wf.startNext();
       if (!node) break;
       started.push(node.id);
+    }
+    for (const stepId of started) {
+      wf.setBaseline(stepId, await this.#guard.baseline(wf.root, wf.node(stepId).data.check).catch(() => void 0));
     }
     const launches = started.map((stepId) => ({
       stepId,
@@ -23088,6 +23253,8 @@ function nextText(wf, launches) {
   if (wf.graph.isComplete) {
     const changes = wf.changes();
     const lines = [`Workflow ${wf.id} is done: all ${wf.graph.size} steps finished and the goal check passed.`];
+    const caveats = wf.caveats();
+    if (caveats.length) lines.push("What this rests on beyond checks written at planning (tell the user):", ...caveats.map((c) => `- ${c}`));
     if (changes.length) lines.push("Answers and check changes (tell the user):", ...changes.map((c) => `- ${c}`));
     return lines.join("\n");
   }
@@ -23169,7 +23336,7 @@ function describe3(wf, id, applied, check2) {
       return "needs the user.";
     case "retry":
       return `not accepted; it runs again.
-${clip3(wf.node(id).data.lastError ?? "", 1500)}`;
+${clip4(wf.node(id).data.lastError ?? "", 1500)}`;
   }
 }
 function target(rawArgs) {
@@ -23181,7 +23348,7 @@ function rootOf(raw) {
   if (!isAbsolute(cwd)) throw new InputError("cwd must be the absolute path of your current working directory.");
   return projectRoot(cwd);
 }
-function clip3(text2, max) {
+function clip4(text2, max) {
   return text2.length <= max ? text2 : `${text2.slice(0, max)}\u2026`;
 }
 function projectRoot(cwd) {

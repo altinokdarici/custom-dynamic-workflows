@@ -1,9 +1,9 @@
 ---
 name: work-graph
-description: Run a multi-step task as a dynamic workflow - a dependency graph of steps, each run by its own subagent, in parallel where safe, with code-run checks, until every step and a final goal check are done. Use when the user asks for work that splits into several stage-sized steps (migrating many items, a change across several packages, one branch or PR per item), or says "run this as a workflow".
+description: Run a multi-step task as a workflow - a dependency graph of steps, each run by its own subagent, in parallel where safe, with code-run checks, until every step and a final goal check are done. Use when the user asks for work that splits into several stage-sized steps (migrating many items, a change across several packages, one branch or PR per item), or says "run this as a workflow".
 ---
 
-# Dynamic workflows
+# work-graph
 
 The work-graph MCP server's tools keep a task as a graph of steps. You run the steps: the tools tell you which steps to launch, you run each one as a subagent, and you hand each subagent's report back. The tools own the rules. When a step reports done, they run its `check` command in code. If the check fails, the step goes back with the check's output. If a step fails the same way twice, it asks the user. A final `goal` step verifies the whole goal and adds steps for anything that's missing. Steps can add follow-up steps.
 
@@ -31,10 +31,11 @@ Every work-graph tool reply ends with what to do next. Follow it until the workf
 2. **Report.** When a subagent finishes, read its final message (Copilot CLI: `read_agent`; Claude Code: the completion notification or its output) and call `report` with `workflowId`, `stepId`, `attempt` and that message unchanged as `report`. If the subagent failed or was cancelled, report the error text instead. Then launch whatever the reply hands out.
 3. **Progress view.** In Agents, the step graph appears in the user's side panel and updates by itself; `plan` says so. Only if it doesn't say so and you have a `canvas_show` tool, call `view` after `plan` and after every `report`, `answer`, `add_step` and `resume`, and pass the page it returns to `canvas_show` unchanged.
 4. **Wait.** While subagents are still running and nothing new is handed out, end your turn; you are notified when one finishes.
-5. **Done.** When a reply says the workflow is done, tell the user, including any answers and check changes it lists.
+5. **Done.** When a reply says the workflow is done, tell the user, including what it lists: what the result rests on beyond checks written at planning, and any answers and check changes.
 
 Rules:
 - Never do a step's work yourself, never edit a step's report, and never edit `.copilot/workflows/`. The checks only mean something if the step's own subagent did the work.
+- Checks are written at planning, when context is fresh, so later work can't quietly lower the bar. Write a `check` for every step a command can verify, including steps you add later.
 - When a step asks a question, put it to the user (with `ask_user` if you have it) and pass their answer to `answer`. Never answer for them. If you can see the cause, such as a wrong check, tell the user what you found and propose the fix. To replace a step's check, pass the new one as `check` and tell the user.
 - `add_step` adds a step the user asks for. Steps added while the goal check runs make it run again after them. Reports that name an unfinished step's id refer to that step, so they never duplicate it. `status` shows the steps, results, errors and questions.
 - A workflow is driven by the session whose subagents run its steps. If those subagents are gone (a new session, a restart), `resume` sends their steps out again with a new attempt number; reports from old attempts are rejected. Never call `resume` while your own subagents are still running steps of that workflow.

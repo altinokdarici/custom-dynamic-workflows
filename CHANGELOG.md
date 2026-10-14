@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0
+
+- Guards checks: a step's git changes since it started are compared against a baseline. Added skip markers, deleted tests, and edits to files or npm scripts that a check runs send the step to the user instead of completing it.
+- The finished workflow lists what it rests on beyond checks written at planning: steps added mid-run, steps without a check, and a goal without a goal check command. Status marks steps added mid-run.
+- README: the "no false success" guarantee is now "checks written up front, enforced later", and says it is best effort.
+
 ## 0.6.0
 
 - Renamed from custom-dynamic-workflows to **work-graph** (repo, plugin, MCP server and skill). The marketplace is now `work-graph`: `claude plugin install work-graph@work-graph`.

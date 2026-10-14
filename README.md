@@ -21,7 +21,7 @@ The graph is a [p-graph](https://github.com/altinokdarici/p-graph) ([`@altinok/p
 > **Code owns control flow. The model owns content.** Agents decide how to do a step and report what work they found. Code decides when a step is done, what runs next and when to ask you.
 
 1. **Nothing accepted is lost.** A step stays in the graph until it completes. No tool or report can remove, skip or complete a step; reports can only add work.
-2. **No false success.** A step completes only when its agent reports `done` and its `check` exits 0, run by the server. The workflow is done only when a final goal step has verified the goal against the repository.
+2. **Checks written up front, enforced later.** Models are most careful at the start, while their context is fresh, and most likely to cut corners late in a long run. So the plan fixes each step's `check` before any work starts, and code, not the model, runs it: a step completes only when its agent reports `done` and its check exits 0. If a step's changes could make a check pass without the work (an added `.skip`, a deleted test, an edited check script or npm script), the step goes to you instead of completing. The final report lists what the result rests on beyond those up-front checks: steps added mid-run, steps without a check, and a goal without a goal check command. This is best effort: a weak check is still a weak gate.
 3. **Always resumable.** All state is one JSON file, written atomically after every change. After a crash, `resume` requeues interrupted steps.
 
 ## How it works

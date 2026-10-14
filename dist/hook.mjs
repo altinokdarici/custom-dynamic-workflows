@@ -1047,6 +1047,15 @@ var Workflow = class _Workflow {
     this.graph.setData(node.id, { ...node.data, attempts: node.data.attempts + 1 });
     return this.graph.get(node.id);
   }
+  /** Records the git state a handed-out step starts from. */
+  setBaseline(id, baseline) {
+    const { baseline: _old, ...data } = this.node(id).data;
+    this.graph.setData(id, baseline ? { ...data, baseline } : data);
+  }
+  /** Checks a step's changes must not weaken: its own and the goal's. */
+  guardedChecks(id) {
+    return [this.node(id).data.check, this.node(GOAL).data.check];
+  }
   /** Adds steps; `blocks` lists existing steps that must wait for them. Returns the new ids. */
   addTasks(tasks, blocks = []) {
     return this.#transact((g) => {
@@ -1058,25 +1067,32 @@ var Workflow = class _Workflow {
           throw new InputError(`Step "${id}" is ${state}; only steps that have not started can wait for new steps.`);
         }
       }
-      const ids = addTasks(g, tasks);
+      const ids = addTasks(g, tasks, { addedBy: "add_step" });
       for (const id of blocks) {
         if (g.get(id).state !== "in-progress") for (const added of ids) g.addDependency(id, added);
       }
       return ids;
     });
   }
+  /** Whether applying this report would complete the step (before its check and guard run). */
+  completes(id, outcome) {
+    return effectiveStatus(id, outcome) === "done" && !this.#unfinishedBeforeGoal(id).length;
+  }
   /** The check to run before `apply`, when the report would complete the step. */
   checkFor(id, outcome) {
-    if (effectiveStatus(id, outcome) !== "done" || this.#unfinishedBeforeGoal(id).length) return void 0;
-    return this.node(id).data.check;
+    return this.completes(id, outcome) ? this.node(id).data.check : void 0;
   }
   /** Steps added while the goal step ran that are not finished; the goal cannot complete before them. */
   #unfinishedBeforeGoal(id) {
     if (id !== GOAL) return [];
     return [...this.graph.nodes()].filter((n) => n.id !== GOAL && n.state !== "completed").map((n) => n.id);
   }
-  /** Applies a step's report. `check` is the result of `checkFor`'s command. */
-  apply(id, outcome, check) {
+  /**
+   * Applies a step's report. `check` is the result of `checkFor`'s command;
+   * `weakening` lists changes since the attempt started that can make checks
+   * pass without the work (see guard.ts). Those go to the user.
+   */
+  apply(id, outcome, check, weakening = []) {
     this.#requireInProgress(id);
     switch (effectiveStatus(id, outcome)) {
       case "done": {
@@ -1090,8 +1106,17 @@ var Workflow = class _Workflow {
         }
         if (check && !check.ok) return this.retryOrAsk(id, `The check failed:
 ${check.output}`);
+        if (weakening.length) {
+          this.#ask(
+            id,
+            `This step reported done${check ? " and its check passed" : ""}, but since it started:
+${weakening.map((w) => `- ${w}`).join("\n")}
+These can make a check pass without the work. If they are intended, say so: the step runs once more and accepts them. Otherwise say what it should do instead.`
+          );
+          return "question";
+        }
         return this.#tryTransact(id, (g) => {
-          const ids = addTasks(g, outcome.newTasks ?? [], { reuseUnfinished: true, self: id });
+          const ids = addTasks(g, outcome.newTasks ?? [], { reuseUnfinished: true, self: id, addedBy: id });
           for (const dependent of g.dependentsOf(id)) {
             if (dependent === GOAL) continue;
             for (const added of ids) g.addDependency(dependent, added, { label: `found by ${id}` });
@@ -1124,7 +1149,7 @@ How should it continue?`
         return this.#tryTransact(id, (g) => {
           g.requeue(id);
           if (requested !== void 0) g.setData(id, { ...g.get(id).data, lastRequested: requested });
-          for (const added of addTasks(g, outcome.newTasks, { reuseUnfinished: true, self: id })) {
+          for (const added of addTasks(g, outcome.newTasks, { reuseUnfinished: true, self: id, addedBy: id })) {
             g.addDependency(id, added, { label: "needed first" });
           }
           for (const dep of late) g.addDependency(id, dep, { label: "added while the goal ran" });
@@ -1183,6 +1208,24 @@ How should it continue?`);
     this.graph.requeue(id);
     return entry;
   }
+  /**
+   * What the finished workflow's success rests on besides checks written at
+   * planning: steps added mid-run, steps done without a check, and a goal
+   * without a goal check command.
+   */
+  caveats() {
+    const nodes = [...this.graph.nodes()].filter((n) => n.id !== GOAL);
+    const lines = [];
+    const added = nodes.filter((n) => n.data.addedBy);
+    if (added.length) {
+      const list = added.map((n) => `${n.id} (${n.data.addedBy === "add_step" ? "with add_step" : `by ${n.data.addedBy}`})`);
+      lines.push(`Added mid-run, so their checks were written then, not at planning: ${list.join(", ")}.`);
+    }
+    const unchecked = nodes.filter((n) => !n.data.check).map((n) => n.id);
+    if (unchecked.length) lines.push(`Done without a check, on their agent's word: ${unchecked.join(", ")}.`);
+    if (!this.node(GOAL).data.check) lines.push("The goal had no goal check command; the goal step's agent judged it.");
+    return lines;
+  }
   /** Every answer and check change, per step. */
   changes() {
     return [...this.graph.nodes()].flatMap((node) => (node.data.history ?? []).map((entry) => `${node.id}: ${entry}`));
@@ -1204,6 +1247,7 @@ How should it continue?`);
     const waiting = this.isWaiting(node);
     const state = waiting ? "waiting for user" : node.state;
     let line = `- [${state}] ${node.id}: ${d.title}`;
+    if (d.addedBy) line += ` (added ${d.addedBy === "add_step" ? "with add_step" : `by ${d.addedBy}`})`;
     if (d.attempts > 1) line += ` (attempt ${d.attempts})`;
     if (node.state === "pending") {
       const open = node.dependencies.filter((dep) => this.graph.get(dep)?.state !== "completed");
@@ -1245,7 +1289,7 @@ function effectiveStatus(id, outcome) {
 function requestedTitles(tasks) {
   return tasks.map((t) => t.title.replace(/\s+/g, " ").trim().toLowerCase()).sort();
 }
-function addTasks(g, tasks, { exactIds = false, reuseUnfinished = false, self = "" } = {}) {
+function addTasks(g, tasks, { exactIds = false, reuseUnfinished = false, self = "", addedBy = "" } = {}) {
   const keys = tasks.map((task) => slug(task.id));
   const ids = /* @__PURE__ */ new Map();
   const reused = /* @__PURE__ */ new Set();
@@ -1270,6 +1314,7 @@ function addTasks(g, tasks, { exactIds = false, reuseUnfinished = false, self = 
     if (reused.has(ids.get(keys[i]))) continue;
     const data = { title: task.title, instructions: task.instructions, attempts: 0 };
     if (task.check) data.check = task.check;
+    if (addedBy) data.addedBy = addedBy;
     g.addNode(ids.get(keys[i]), data, task.priority === void 0 ? {} : { priority: task.priority });
   }
   for (const [i, task] of tasks.entries()) {
@@ -1296,6 +1341,11 @@ function clip(text2, max = 300) {
 
 // src/check.ts
 var GROUP = process.platform !== "win32";
+
+// src/guard.ts
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+var git = promisify(execFile);
 
 // src/prompt.ts
 var OUTCOME_SCHEMA = {
